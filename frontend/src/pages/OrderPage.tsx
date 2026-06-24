@@ -570,7 +570,10 @@ export default function OrderPage() {
     });
   }
 
-  const openNote = (v: number, k?: string) => { setNoteTarget({ vId: v, key: k }); setNoteDraft(''); };
+  // Declared as a hoisted function (not a const) because it's referenced inside
+  // renderProduct, which runs while the component body's `return` is still
+  // evaluating — before a `const` defined here would be initialized (TDZ).
+  function openNote(v: number, k?: string) { setNoteTarget({ vId: v, key: k }); setNoteDraft(''); }
 
   function renderProduct(prod: any) {
     const hasVariants = prod.variants.length > 1 || prod.variants.some((v: any) => v.name && v.name.trim());
