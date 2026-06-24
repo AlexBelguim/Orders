@@ -52,7 +52,15 @@ app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true }))
 
 const cwd = process.cwd();
 let frontendDist: string | undefined;
-const candidates = [process.env.FRONTEND_DIST, path.join(cwd, '..', 'frontend', 'dist'), path.join(cwd, 'dist')];
+// Look in every plausible layout: env override, sibling frontend/dist
+// (dev + Pi package), frontend/dist inside the app dir (Docker image), and
+// finally the backend's own dist (for some packaged builds).
+const candidates = [
+  process.env.FRONTEND_DIST,
+  path.join(cwd, '..', 'frontend', 'dist'),
+  path.join(cwd, 'frontend', 'dist'),
+  path.join(cwd, 'dist'),
+];
 for (const c of candidates) { if (c && fs.existsSync(path.join(c, 'index.html'))) { frontendDist = c; break; } }
 if (frontendDist) {
   app.use(express.static(frontendDist));
