@@ -1,0 +1,44 @@
+{
+  "name": "wervik-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p .",
+    "start": "node dist/index.js",
+    "prisma": "prisma",
+    "migrate": "prisma migrate dev --name init",
+    "seed": "tsx prisma/seed.ts",
+    "pkg:arm64": "npm run build && pkg . --targets node18-linux-arm64 --output ../pi-build/wervik"
+  },
+  "bin": "dist/index.js",
+  "pkg": {
+    "assets": [
+      "../frontend/dist/**/*",
+      "prisma/*.prisma",
+      "prisma/*.sql",
+      "prisma/*.db"
+    ]
+  },
+  "dependencies": {
+    "@prisma/client": "^5.16.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-async-errors": "^3.1.1",
+    "nanoid": "^5.1.5",
+    "nodemailer": "^6.9.16",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/nodemailer": "^6.4.17",
+    "@types/qrcode": "^1.5.5",
+    "pkg": "^5.8.1",
+    "prisma": "^5.16.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.5.4"
+  }
+}

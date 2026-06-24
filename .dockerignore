@@ -1,0 +1,38 @@
+# Dependencies (re-installed cleanly inside each build stage)
+**/node_modules
+**/.pnp
+**/.pnp.js
+
+# Build outputs
+backend/dist
+frontend/dist
+**/*.db
+**/*.db-journal
+**/*.log
+
+# Local runtime / data
+backend/uploads
+**/uploads/*
+pi-build
+.data
+
+# Git / editor / OS cruft
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+nul
+
+# Docker files themselves don't need copying into the build context.
+# NOTE: docker-entrypoint.sh is intentionally NOT ignored — the Dockerfile
+# COPYs it into the image.
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+README.md
+*.md

@@ -1,0 +1,37 @@
+# Dependencies
+**/node_modules/
+**/.pnp
+**/.pnp.js
+
+# Build output
+backend/dist/
+frontend/dist/
+pi-build/
+
+# --- LIVE DATA: never commit these ---
+# SQLite database (your actual orders/products data)
+backend/prisma/*.db
+backend/prisma/*.db-journal
+**/*.db
+**/*.db-journal
+# Uploaded product images
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Env / secrets (per-host config — copy .env.example to .env locally)
+**/.env
+.env
+.env.*
+!.env.example
+
+# Logs
+**/*.log
+npm-debug.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+backend/nul

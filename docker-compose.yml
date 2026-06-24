@@ -1,0 +1,26 @@
+services:
+  wervik:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wervik:latest
+    container_name: wervik
+    restart: unless-stopped
+    ports:
+      # host 9009 -> container 4000 (PORT inside the image)
+      - "9009:4000"
+    volumes:
+      # Persistent SQLite DB + uploaded product images across rebuilds.
+      - wervik-data:/data
+    environment:
+      # Container-side listen port (must match the mapped container port above).
+      PORT: "4000"
+      # Override these to point the app at your tunnel / public domain,
+      # and to configure SMTP + Mollie. They are read by the backend on boot;
+      # keys also editable later in Admin -> Settings (DB takes precedence).
+      PUBLIC_URL: "http://localhost:9009"
+      # SMTP (optional): smtp_host, smtp_port, smtp_user, smtp_pass
+      # Mollie (optional): mollie_api_key
+
+volumes:
+  wervik-data:

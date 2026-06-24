@@ -1,0 +1,375 @@
+// Wervik — one merged order app (delivery + eat-in)
+// SQLite does not support enums; we use String with documented value sets.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Menus & products
+// ---------------------------------------------------------------------------
+
+// A "menu" = a group of categories. Locations choose which profiles they show.
+model Profile {
+  id         Int        @id @default(autoincrement())
+  name       String
+  createdAt  DateTime   @default(now())
+  categories Category[]
+  locations  LocationProfile[]
+}
+
+model Category {
+  id            Int       @id @default(autoincrement())
+  name          String
+  sort          Int       @default(0)
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  profile       Profile   @relation(fields: [profileId], references: [id])
+  profileId     Int
+  products      Product[]
+  // default prep screen for products in this category (overridable per product)
+  prepScreen    PrepScreen? @relation(fields: [prepScreenId], references: [id])
+  prepScreenId  Int?
+  excludedFromLocations LocationCategoryExclusion[] @relation("LocCatExcl")
+}
+
+model Product {
+  id          Int                @id @default(autoincrement())
+  name        String
+  description String?
+  imageUrl    String?
+  allergens   String?            // free text, shown to customer
+  active      Boolean            @default(true)
+  // Per-item display controls (order page variant D):
+  // largeCard   → "Groot": big photo card (only takes effect when imageUrl is set)
+  // recommended → "Aanrader": ★ badge, independent of size
+  largeCard   Boolean            @default(false)
+  recommended Boolean            @default(false)
+  sort        Int                @default(0)
+  createdAt   DateTime           @default(now())
+  category    Category           @relation(fields: [categoryId], references: [id])
+  categoryId  Int
+  variants    Variant[]
+  productMenus ProductChoiceMenu[]
+  // per-product prep override (null → fall back to category)
+  prepScreen    PrepScreen? @relation(fields: [prepScreenId], references: [id])
+  prepScreenId  Int?
+  excludedFromLocations LocationProductExclusion[] @relation("LocProdExcl")
+}
+
+model Variant {
+  id         Int      @id @default(autoincrement())
+  name       String   // empty string for single-price products
+  priceCents Int
+  soldOut    Boolean  @default(false)
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  Int
+  orderItems OrderItem[]
+}
+
+// ---------------------------------------------------------------------------
+// Choice menus (sauces, extras, "append to end")
+// ---------------------------------------------------------------------------
+
+model ChoiceMenu {
+  id           Int                @id @default(autoincrement())
+  name         String
+  requireOne   Boolean            @default(false)
+  allowMultiple Boolean           @default(false)
+  appendToEnd  Boolean            @default(false)
+  createdAt    DateTime           @default(now())
+  options      ChoiceOption[]
+  products     ProductChoiceMenu[]
+}
+
+model ChoiceOption {
+  id         Int        @id @default(autoincrement())
+  name       String
+  priceCents Int        @default(0)
+  sort       Int        @default(0)
+  menu        ChoiceMenu @relation(fields: [menuId], references: [id])
+  menuId     Int
+}
+
+model ProductChoiceMenu {
+  id         Int        @id @default(autoincrement())
+  product    Product    @relation(fields: [productId], references: [id])
+  productId  Int
+  menu       ChoiceMenu @relation(fields: [menuId], references: [id])
+  menuId     Int
+  sort       Int        @default(0)
+
+  @@unique([productId, menuId])
+}
+
+// ---------------------------------------------------------------------------
+// Prep screens (Kitchen, Bar, Bar2, Cocktail, Takeaway, ...)
+// ---------------------------------------------------------------------------
+
+model PrepScreen {
+  id          Int      @id @default(autoincrement())
+  name        String
+  slug        String   @unique   // used in /screen/:slug
+  sort        Int      @default(0)
+  isTakeaway  Boolean  @default(false) // enables Busy/On-the-way flow
+  createdAt   DateTime @default(now())
+  // back-relations for routing
+  categoryDefaults  Category[]
+  productDefaults   Product[]
+  locationDefaults  Location[]
+  coordinatorLocations Location[] @relation("LocCoordinator")
+  orderItems        OrderItem[]
+  routeOverridesFrom RouteOverride[] @relation("RouteFrom")
+  routeOverridesTo   RouteOverride[] @relation("RouteTo")
+}
+
+// ---------------------------------------------------------------------------
+// Locations & tables
+// ---------------------------------------------------------------------------
+
+// kind: "DELIVERY" (festival café/terras) | "EAT_IN" (your restaurant)
+model Location {
+  id            Int      @id @default(autoincrement())
+  name          String
+  code          String   @unique    // short code in the delivery QR URL
+  kind          String   @default("DELIVERY") // DELIVERY | EAT_IN
+  // delivery-only settings
+  deliveryNote  String?              // e.g. "Geleverd binnen ~20 min."
+  deliveryEtaMin Int?                // e.g. 20
+  minOrderCents Int?                 // minimum cart total to allow ordering
+  openFrom      String?              // "11:00" — optional ordering window
+  openUntil     String?              // "24:00"
+  createdAt     DateTime @default(now())
+  tables        Table[]
+  allowedProfiles LocationProfile[]
+  excludedCategories LocationCategoryExclusion[]
+  excludedProducts   LocationProductExclusion[]
+  commissionOverrides CommissionOverride[]
+  // default prep screen for this location's takeaway/delivery items
+  prepScreen    PrepScreen? @relation(fields: [prepScreenId], references: [id])
+  prepScreenId  Int?
+  // when set, this screen aggregates the WHOLE order (cross-screen visibility)
+  coordinatorScreen   PrepScreen? @relation("LocCoordinator", fields: [coordinatorScreenId], references: [id])
+  coordinatorScreenId Int?
+  orders        Order[]
+}
+
+model LocationProfile {
+  location   Location @relation(fields: [locationId], references: [id])
+  locationId Int
+  profile    Profile  @relation(fields: [profileId], references: [id])
+  profileId  Int
+
+  @@id([locationId, profileId])
+}
+
+// "This café brings their own X" — hide a category/product there.
+model LocationCategoryExclusion {
+  id         Int      @id @default(autoincrement())
+  location   Location @relation(fields: [locationId], references: [id])
+  locationId Int
+  category   Category @relation("LocCatExcl", fields: [categoryId], references: [id])
+  categoryId Int
+
+  @@unique([locationId, categoryId])
+}
+
+model LocationProductExclusion {
+  id         Int      @id @default(autoincrement())
+  location   Location @relation(fields: [locationId], references: [id])
+  locationId Int
+  product    Product  @relation("LocProdExcl", fields: [productId], references: [id])
+  productId  Int
+
+  @@unique([locationId, productId])
+}
+
+model Table {
+  id         Int      @id @default(autoincrement())
+  name       String
+  code       String   @unique   // used in /t/:code
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  location   Location? @relation(fields: [locationId], references: [id])
+  locationId Int?
+  orders     Order[]
+  routeOverrides RouteOverride[]
+}
+
+// Per eat-in table: "items that would go to screen X → send to screen Y instead"
+model RouteOverride {
+  id           Int        @id @default(autoincrement())
+  table        Table      @relation(fields: [tableId], references: [id])
+  tableId      Int
+  fromScreen   PrepScreen @relation("RouteFrom", fields: [fromScreenId], references: [id])
+  fromScreenId Int
+  toScreen     PrepScreen @relation("RouteTo", fields: [toScreenId], references: [id])
+  toScreenId   Int
+
+  @@unique([tableId, fromScreenId])
+}
+
+// ---------------------------------------------------------------------------
+// Commission (fixed € per item, per café)
+// ---------------------------------------------------------------------------
+
+model CommissionOverride {
+  id         Int      @id @default(autoincrement())
+  location   Location @relation(fields: [locationId], references: [id])
+  locationId Int
+  // scope: "CATEGORY" | "PRODUCT"
+  scope      String
+  targetId   Int
+  fixedCents Int      @default(0)
+
+  @@unique([locationId, scope, targetId])
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+model Order {
+  id              Int      @id @default(autoincrement())
+  createdAt       DateTime @default(now())
+  status          String   @default("NEW")
+  // NEW → IN_PREP → READY → DELIVERED (delivery/takeaway)
+  // NEW → IN_PREP → DONE (eat-in)
+  // NEW → CANCELLED (within cancel window)
+  closedAt        DateTime?
+
+  // placement
+  deliveryMode    String   @default("EAT_IN") // DELIVERY | TAKEAWAY | EAT_IN
+  note            String?
+
+  // location & table
+  location        Location? @relation(fields: [locationId], references: [id])
+  locationId      Int?
+  table           Table?   @relation(fields: [tableId], references: [id])
+  tableId         Int?
+  tableLabel      String?  // typed table# for delivery orders (e.g. "12")
+
+  // customer (delivery only; null for eat-in)
+  customerName    String?
+  customerEmail   String?
+  customerPhone   String?
+
+  // payment
+  payMethod       String   @default("ON_DELIVERY") // ONLINE | ON_DELIVERY | NONE (eat-in)
+  payment         Payment?
+
+  // email/track/cancel
+  cancelToken     String   @unique @default("pend")
+  cancelledAt     DateTime?
+
+  // delivery dispatch (denormalized for quick filtering; kept in sync with DeliveryAssignment)
+  assignedAgentId Int?
+  assignment      DeliveryAssignment?
+
+  items           OrderItem[]
+  positionPings   PositionPing[]
+}
+
+model OrderItem {
+  id              Int      @id @default(autoincrement())
+  order           Order    @relation(fields: [orderId], references: [id])
+  orderId         Int
+  variant         Variant  @relation(fields: [variantId], references: [id])
+  variantId       Int
+  qty             Int      @default(1)
+  lineNote        String?
+  choices         OrderItemChoice[]
+
+  // snapshots at order time (historical reports never change when rules change)
+  unitPriceCents  Int      @default(0)
+  commissionCents Int      @default(0)
+  prepScreen      PrepScreen? @relation(fields: [prepScreenId], references: [id])
+  prepScreenId    Int?
+
+  // per-item prep status (persistent, shared across devices/screens)
+  // PENDING → PREPARING → READY → DONE
+  itemStatus      String   @default("PENDING")
+  itemDoneAt      DateTime?
+}
+
+model OrderItemChoice {
+  id           Int       @id @default(autoincrement())
+  orderItem    OrderItem @relation(fields: [orderItemId], references: [id])
+  orderItemId  Int
+  menuName     String
+  optionName   String?
+  priceCents   Int       @default(0)
+  appendToEnd  Boolean   @default(false)
+}
+
+// ---------------------------------------------------------------------------
+// Payments (Mollie)
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id           Int      @id @default(autoincrement())
+  order        Order    @relation(fields: [orderId], references: [id])
+  orderId      Int      @unique
+  provider     String   @default("MOLLIE")
+  providerId   String?  // Mollie payment id
+  amountCents  Int
+  status       String   @default("PENDING") // PENDING | PAID | FAILED | REFUNDED
+  method       String?  // bancontact | applepay | creditcard ...
+  createdAt    DateTime @default(now())
+  paidAt       DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Generic settings (PUBLIC_URL, SMTP, Mollie, restaurant name)
+// ---------------------------------------------------------------------------
+
+model Setting {
+  key   String @id
+  value String
+}
+
+// ---------------------------------------------------------------------------
+// Delivery dispatch (agents, assignments, GPS positions)
+// ---------------------------------------------------------------------------
+
+model DeliveryAgent {
+  id        Int      @id @default(autoincrement())
+  name      String
+  phone     String?
+  code      String   @unique   // short slug for the agent's phone page /bezorger/:code
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  assignments DeliveryAssignment[]
+}
+
+// One active assignment per order (orderId @unique). Reassigning replaces the row.
+model DeliveryAssignment {
+  id          Int      @id @default(autoincrement())
+  order       Order    @relation(fields: [orderId], references: [id])
+  orderId     Int      @unique
+  agent       DeliveryAgent @relation(fields: [agentId], references: [id])
+  agentId     Int
+  assignedAt  DateTime @default(now())
+  pickedUpAt  DateTime?
+  deliveredAt DateTime?
+  status      String   @default("ASSIGNED") // ASSIGNED | PICKED_UP | DELIVERED
+}
+
+// Append-only GPS log for both customer-shared spot and agent movement.
+model PositionPing {
+  id         Int      @id @default(autoincrement())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    Int
+  lat        Float
+  lon        Float
+  accuracy   Float?
+  heading    Float?
+  source     String   // CUSTOMER | AGENT
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+}
