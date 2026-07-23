@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as api from '../lib/api';
 import { screenPauseState, nextAt } from '../lib/menu';
+import TimeInput from './TimeInput';
 
 export default function PrepScreensAdmin({ screens, onChange }: { screens: any[]; onChange: () => void }) {
   const [name, setName] = useState('');
@@ -89,9 +90,9 @@ function PauseControls({ screen, onChange }: { screen: any; onChange: () => void
       </div>
       <div className="row" style={{ marginTop: 8, gap: 10 }}>
         <label className="muted" style={{ fontSize: 13 }}>Elke dag van</label>
-        <input type="time" defaultValue={screen.pauseFrom || ''} onBlur={(e) => { if (e.target.value !== (screen.pauseFrom || '')) patch({ pauseFrom: e.target.value }); }} />
+        <TimeInput value={screen.pauseFrom} onCommit={(v) => patch({ pauseFrom: v })} placeholder="11:30" />
         <label className="muted" style={{ fontSize: 13 }}>tot</label>
-        <input type="time" defaultValue={screen.pauseUntil || ''} onBlur={(e) => { if (e.target.value !== (screen.pauseUntil || '')) patch({ pauseUntil: e.target.value }); }} />
+        <TimeInput value={screen.pauseUntil} onCommit={(v) => patch({ pauseUntil: v })} placeholder="13:30" />
         {(screen.pauseFrom || screen.pauseUntil) && (
           <button onClick={() => patch({ pauseFrom: null, pauseUntil: null })}>✕ Geen vaste uren</button>
         )}

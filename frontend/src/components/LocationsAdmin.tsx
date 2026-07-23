@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api';
 import { euro, euroToCents } from '../lib/format';
+import TimeInput from './TimeInput';
 
 export default function LocationsAdmin({ profiles, screens, locations, onChange }: { profiles: any[]; screens: any[]; locations: any[]; onChange: () => void }) {
   const [name, setName] = useState('');
@@ -124,14 +125,14 @@ function LocationDetail({ loc, profiles, screens, onChange }: { loc: any; profil
           </div>
           <div className="row">
             <label>Open van</label>
-            <input type="time" defaultValue={loc.openFrom || ''} onBlur={(e) => patch({ openFrom: e.target.value || null })} style={{ width: 110 }} />
+            <TimeInput value={loc.openFrom} onCommit={(v) => patch({ openFrom: v })} placeholder="11:00" />
             <label>tot</label>
-            {/* stored legacy "24:00" renders as 00:00 — same meaning (tot middernacht) */}
-            <input type="time" defaultValue={loc.openUntil === '24:00' ? '00:00' : (loc.openUntil || '')} onBlur={(e) => patch({ openUntil: e.target.value || null })} style={{ width: 110 }} />
+            {/* stored legacy "24:00" shows as 00:00 — same meaning (tot middernacht) */}
+            <TimeInput value={loc.openUntil === '24:00' ? '00:00' : loc.openUntil} onCommit={(v) => patch({ openUntil: v })} placeholder="00:00" />
             {(loc.openFrom || loc.openUntil) && (
               <button onClick={() => patch({ openFrom: null, openUntil: null })}>✕ Altijd open</button>
             )}
-            <span className="muted" style={{ fontSize: 12 }}>Buiten deze uren kan er niet besteld worden. 00:00 als einde = tot middernacht. Leeg = altijd open.</span>
+            <span className="muted" style={{ fontSize: 12 }}>24-uurs. Buiten deze uren kan er niet besteld worden. 00:00 als einde = tot middernacht. Leeg = altijd open.</span>
           </div>
 
           <CommissionEditor loc={loc} onChange={onChange} />

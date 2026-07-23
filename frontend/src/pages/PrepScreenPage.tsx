@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import * as api from '../lib/api';
 import { aggregateOrderItems, aggregateAppendToEnd, screenPauseState, nextAt } from '../lib/menu';
+import TimeInput from '../components/TimeInput';
 
 const API = import.meta.env.VITE_API_URL || '';
 
@@ -221,7 +222,9 @@ export default function PrepScreenPage() {
             </div>
             <div className="row" style={{ marginTop: 12 }}>
               <label className="muted" style={{ fontSize: 13 }}>tot</label>
-              <input type="time" value={pauseCustom} onChange={(e) => setPauseCustom(e.target.value)} style={{ flex: 1 }} />
+              {/* commitOnChange: the Pauzeer button is disabled until a valid
+                  time exists, and a disabled button never blurs the input. */}
+              <TimeInput value={pauseCustom} onCommit={(v) => setPauseCustom(v || '')} commitOnChange placeholder="13:30" width={92} />
               <button className="primary" disabled={!pauseCustom} onClick={() => { const d = nextAt(pauseCustom); if (d) doPause(d); }}>Pauzeer</button>
             </div>
             <button style={{ width: '100%', marginTop: 14 }} onClick={() => setShowPause(false)}>Annuleren</button>
