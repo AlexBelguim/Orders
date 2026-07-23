@@ -124,9 +124,14 @@ function LocationDetail({ loc, profiles, screens, onChange }: { loc: any; profil
           </div>
           <div className="row">
             <label>Open van</label>
-            <input defaultValue={loc.openFrom || ''} placeholder="11:00" onBlur={(e) => patch({ openFrom: e.target.value })} style={{ width: 90 }} />
+            <input type="time" defaultValue={loc.openFrom || ''} onBlur={(e) => patch({ openFrom: e.target.value || null })} style={{ width: 110 }} />
             <label>tot</label>
-            <input defaultValue={loc.openUntil || ''} placeholder="24:00" onBlur={(e) => patch({ openUntil: e.target.value })} style={{ width: 90 }} />
+            {/* stored legacy "24:00" renders as 00:00 — same meaning (tot middernacht) */}
+            <input type="time" defaultValue={loc.openUntil === '24:00' ? '00:00' : (loc.openUntil || '')} onBlur={(e) => patch({ openUntil: e.target.value || null })} style={{ width: 110 }} />
+            {(loc.openFrom || loc.openUntil) && (
+              <button onClick={() => patch({ openFrom: null, openUntil: null })}>✕ Altijd open</button>
+            )}
+            <span className="muted" style={{ fontSize: 12 }}>Buiten deze uren kan er niet besteld worden. 00:00 als einde = tot middernacht. Leeg = altijd open.</span>
           </div>
 
           <CommissionEditor loc={loc} onChange={onChange} />

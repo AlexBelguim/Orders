@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import * as api from '../lib/api';
 import { euro } from '../lib/format';
-import { filterTreeByExclusions, screenPauseState } from '../lib/menu';
+import { filterTreeByExclusions, screenPauseState, inDailyWindow } from '../lib/menu';
 
 type Mode = 'TABLE' | 'LOCATION';
 
@@ -149,7 +149,15 @@ export default function OrderPage() {
 
   const isDelivery = location?.kind === 'DELIVERY';
 
+  // Opening hours: outside the location's open window nothing can be ordered.
+  // Re-evaluated every render (the 30s pause tick keeps it live at boundaries).
+  const isClosed = !!location && inDailyWindow(location.openFrom, location.openUntil) === false;
+  const openLabel = location?.openFrom && location?.openUntil
+    ? `${location.openFrom} tot ${location.openUntil === '00:00' ? '24:00' : location.openUntil}`
+    : '';
+
   const add = (variant: any, product: any) => {
+    if (isClosed) return; // buttons are disabled too — belt and braces
     const pmenus = (product.productMenus || []).slice().sort((a: any, b: any) => (a.sort ?? 0) - (b.sort ?? 0));
     const menus = pmenus.map((pm: any) => ({
       name: pm.menu?.name ?? pm.menuName,
@@ -396,8 +404,16 @@ export default function OrderPage() {
                 </div>
               )}
 
+              {/* Closed: outside opening hours the cart can't be submitted */}
+              {isClosed && (
+                <div className="closed-banner" style={{ marginTop: 12 }}>
+                  <span className="pause-banner-icon">🌙</span>
+                  <span>We zijn nu <strong>gesloten</strong>{openLabel ? <> — bestellen kan elke dag van <strong>{openLabel}</strong></> : null}. Je mandje blijft bewaard zolang je de pagina open houdt.</span>
+                </div>
+              )}
+
               {/* Rush pause: items added before the pause hit can't be ordered now */}
-              {pausedCartLines.length > 0 && (
+              {!isClosed && pausedCartLines.length > 0 && (
                 <div className="pause-banner" style={{ marginTop: 12 }}>
                   <span className="pause-banner-icon">⏸</span>
                   <span>
@@ -470,7 +486,12 @@ export default function OrderPage() {
 
               <div className="cart-bar">
                 {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
-                {pausedCartLines.length > 0 ? (
+                {isClosed ? (
+                  <button className="cta-blocked" disabled>
+                    <span>🌙 Gesloten{location.openFrom ? ` — open vanaf ${location.openFrom}` : ''}</span>
+                    {openLabel && <span className="cta-sub">Bestellen kan elke dag van {openLabel}</span>}
+                  </button>
+                ) : pausedCartLines.length > 0 ? (
                   <button className="cta-blocked" disabled>
                     <span>⏸ {pausedCartLines[0].pz.screenName || 'Keuken'} gepauzeerd{pausedCartLines[0].pz.until ? ` tot ${pausedCartLines[0].pz.until}` : ''}</span>
                     <span className="cta-sub">Verwijder de gepauzeerde items om al te bestellen</span>
@@ -509,8 +530,16 @@ export default function OrderPage() {
             return parts.length ? <div className="min-order-hint">{parts.join(' — ')}</div> : null;
           })()}
 
+          {/* Closed: outside opening hours nothing can be ordered */}
+          {isClosed && (
+            <div className="closed-banner">
+              <span className="pause-banner-icon">🌙</span>
+              <span>We zijn nu <strong>gesloten</strong>{openLabel ? <> — bestellen kan elke dag van <strong>{openLabel}</strong></> : null}. Je kan het menu wel al bekijken.</span>
+            </div>
+          )}
+
           {/* Rush pause: one banner per paused screen with items on this menu */}
-          {pausedScreenBanners().map((b) => (
+          {!isClosed && pausedScreenBanners().map((b) => (
             <div key={b.name} className="pause-banner">
               <span className="pause-banner-icon">⏸</span>
               <span>
@@ -728,7 +757,8 @@ export default function OrderPage() {
     const img = prod.imageUrl ? api.assetUrl(prod.imageUrl) : '';
     const recommended = !!prod.recommended;
     // Rush pause: the screen this product routes to isn't taking orders now.
-    const pz = pauseFor(prod, cat);
+    // (Irrelevant while the whole location is closed — closed wins.)
+    const pz = isClosed ? { paused: false, until: null } : pauseFor(prod, cat);
     const paused = pz.paused;
     const pauseLabel = pz.until ? `tot ${pz.until}` : 'even pauze';
 
@@ -736,7 +766,7 @@ export default function OrderPage() {
     if (isBigCard(prod)) {
       const v0 = prod.variants[0];
       const so = !!v0.soldOut;
-      const off = so || paused;
+      const off = so || paused || isClosed;
       const lines = cart.filter((i) => i.variantId === v0.id);
       const desc = [prod.description, euro(v0.priceCents)].filter(Boolean).join(' · ');
       return (
@@ -761,7 +791,7 @@ export default function OrderPage() {
     if (!hasVariants && img) {
       const v0 = prod.variants[0];
       const so = !!v0.soldOut;
-      const off = so || paused;
+      const off = so || paused || isClosed;
       const lines = cart.filter((i) => i.variantId === v0.id);
       return (
         <div key={prod.id} className="product-card">
@@ -794,7 +824,7 @@ export default function OrderPage() {
             {(() => {
               const v0 = prod.variants[0];
               const so = !!v0.soldOut;
-              const off = so || paused;
+              const off = so || paused || isClosed;
               return (
                 <div className={`single-row triple ${so ? 'sold' : ''} ${paused ? 'paused' : ''}`}>
                   <div>
@@ -830,7 +860,7 @@ export default function OrderPage() {
               {prod.variants.map((v: any) => {
                 const vLines = cart.filter((l) => l.variantId === v.id);
                 const so = !!v.soldOut;
-                const off = so || paused;
+                const off = so || paused || isClosed;
                 return (
                   <div key={v.id}>
                     <div className={`variant-row multi ${so ? 'sold' : ''} ${paused ? 'paused' : ''}`}>

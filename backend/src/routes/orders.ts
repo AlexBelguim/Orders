@@ -2,7 +2,7 @@ import { Router } from 'express';
 import prisma from '../db.js';
 import { io } from '../index.js';
 import { resolvePrepScreen, resolveCommissionCents } from '../services/routing.js';
-import { screenPauseState } from '../util.js';
+import { screenPauseState, inDailyWindow } from '../util.js';
 import { sendOrderConfirmationEmail } from '../services/email.js';
 import { nanoid } from 'nanoid';
 import type { OrderItemInput } from '../services/routing.js';
@@ -36,6 +36,13 @@ export default function ordersRouter() {
     if (!table && !location) return res.status(400).json({ error: 'Geen locatie of tafel opgegeven' });
     if (isDelivery && !String(body.customerName || '').trim()) return res.status(400).json({ error: 'Naam verplicht' });
     if (isDelivery && !String(body.customerPhone || '').trim()) return res.status(400).json({ error: 'Telefoonnummer verplicht' });
+
+    // Opening hours: outside the location's open window, no orders.
+    if (location && inDailyWindow(location.openFrom, location.openUntil) === false) {
+      return res.status(409).json({
+        error: `${location.name} is nu gesloten — bestellen kan van ${location.openFrom} tot ${location.openUntil === '00:00' ? '24:00' : location.openUntil}.`,
+      });
+    }
 
     // Build items with resolved prep screen + commission snapshots.
     const screensById = new Map((await prisma.prepScreen.findMany()).map((s) => [s.id, s]));

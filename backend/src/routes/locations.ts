@@ -71,8 +71,13 @@ export default function locationsRouter() {
   r.patch('/:id', async (req, res) => {
     const id = Number(req.params.id);
     const data: any = {};
-    for (const k of ['name', 'kind', 'deliveryNote', 'openFrom', 'openUntil']) {
+    for (const k of ['name', 'kind', 'deliveryNote']) {
       if ((req.body as any)?.[k] !== undefined) data[k] = (req.body as any)[k];
+    }
+    // Opening window: '' (cleared time input) means "no restriction" → null.
+    for (const k of ['openFrom', 'openUntil']) {
+      const v = (req.body as any)?.[k];
+      if (v !== undefined) data[k] = v === '' || v === null ? null : String(v);
     }
     // Numeric / nullable numeric fields: coerce strings → number, '' → null.
     for (const k of ['deliveryEtaMin', 'minOrderCents', 'prepScreenId', 'coordinatorScreenId']) {

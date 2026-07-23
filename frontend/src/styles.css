@@ -804,4 +804,13 @@ a.chip { text-decoration: none; }
 .pause-admin-row:first-of-type { border-top: none; }
 .pause-admin-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
+/* Closed (outside the location's opening hours) — dark, unlike the amber pause */
+.closed-banner {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: #263238; color: #eceff1; border-radius: 12px;
+  padding: 13px 15px; font-size: 13px; line-height: 1.5;
+  margin-bottom: 12px;
+}
+.closed-banner strong { color: #fff; }
+
 

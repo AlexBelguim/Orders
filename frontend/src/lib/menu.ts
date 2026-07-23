@@ -15,9 +15,21 @@ function parseHM(v?: string | null): number | null {
   return h * 60 + min;
 }
 
+// Is the current time inside a daily "HH:MM"–"HH:MM" window? null = window not
+// configured (or meaningless equal bounds). until <= from crosses midnight
+// (e.g. 18:00–02:00); "00:00" as the end means "until middernacht".
+export function inDailyWindow(fromStr?: string | null, untilStr?: string | null, now: Date = new Date()): boolean | null {
+  const from = parseHM(fromStr);
+  const until = parseHM(untilStr);
+  if (from == null || until == null) return null;
+  if (from === until) return null;
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return from < until ? cur >= from && cur < until : cur >= from || cur < until;
+}
+
 // Is this prep screen paused right now, and until when ("HH:MM" label)?
 // A live manual override (pauseOverrideUntil in the future) wins over the daily
-// pauseFrom–pauseUntil window; a window with until <= from crosses midnight.
+// pauseFrom–pauseUntil window.
 export function screenPauseState(s: any, now: Date = new Date()): PauseInfo {
   if (!s) return { paused: false, until: null };
   const fmt = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -25,12 +37,9 @@ export function screenPauseState(s: any, now: Date = new Date()): PauseInfo {
   if (ovUntil && !Number.isNaN(ovUntil.getTime()) && ovUntil.getTime() > now.getTime()) {
     return s.pauseOverridePaused ? { paused: true, until: fmt(ovUntil) } : { paused: false, until: null };
   }
-  const from = parseHM(s.pauseFrom);
-  const until = parseHM(s.pauseUntil);
-  if (from == null || until == null) return { paused: false, until: null };
-  const cur = now.getHours() * 60 + now.getMinutes();
-  const inWindow = from <= until ? cur >= from && cur < until : cur >= from || cur < until;
-  return inWindow ? { paused: true, until: s.pauseUntil } : { paused: false, until: null };
+  return inDailyWindow(s.pauseFrom, s.pauseUntil, now)
+    ? { paused: true, until: s.pauseUntil }
+    : { paused: false, until: null };
 }
 
 // "13:30" → the next Date that time occurs (today, or tomorrow if already past).
