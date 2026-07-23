@@ -46,6 +46,25 @@ export default function paymentsRouter() {
       res.json({ checkoutUrl, mollieId });
     } catch (e: any) {
       console.error('[payments] create failed:', e?.message);
+      // This is the customer's own checkout: the order was created seconds ago
+      // and is now unpayable (Mollie down, onboarding incomplete, bad key...).
+      // Roll it back so the kitchen never starts on an order nobody was asked
+      // to pay for. The customer keeps their cart and re-orders as "bij
+      // levering", which places a fresh order. Only NEW, unpaid orders are
+      // touched — /resend deliberately does not go through here.
+      try {
+        const order = await prisma.order.findUnique({ where: { id: orderId }, include: { payment: true } });
+        if (order && order.status === 'NEW' && order.payment?.status !== 'PAID') {
+          await prisma.order.update({
+            where: { id: orderId },
+            data: { status: 'CANCELLED', cancelledAt: new Date(), closedAt: new Date() },
+          });
+          io.emit('orderUpdated', { orderId, status: 'CANCELLED' });
+          console.warn(`[payments] order #${orderId} cancelled — payment could not be started`);
+        }
+      } catch (rollbackErr: any) {
+        console.error('[payments] rollback failed for order', orderId, rollbackErr?.message);
+      }
       res.status(e?.status || 502).json({ error: e?.status ? e.message : 'Betaling kon niet worden gestart', detail: e?.message });
     }
   });

@@ -56,6 +56,9 @@ export default function OrderPage() {
   const [tableLabel, setTableLabel] = useState('');
   const [orderNote, setOrderNote] = useState('');
   const [payMethod, setPayMethod] = useState<'ONLINE' | 'ON_DELIVERY'>('ON_DELIVERY');
+  // Set once Mollie has refused to start a payment — the online option is then
+  // disabled for this session so the customer can't hit the same wall twice.
+  const [onlineUnavailable, setOnlineUnavailable] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -289,18 +292,25 @@ export default function OrderPage() {
       if (isDelivery && payMethod === 'ONLINE') {
         try {
           const pay = await api.createPayment(order.id);
-          if (pay.checkoutUrl) {
-            setRedirecting(true); // show the redirect splash, not the empty cart
-            window.location.href = pay.checkoutUrl;
-            return;
-          }
+          if (!pay.checkoutUrl) throw new Error('Mollie gaf geen checkout-URL terug');
+          setRedirecting(true); // show the redirect splash, not the empty cart
+          window.location.href = pay.checkoutUrl;
+          return;
         } catch (e: any) {
-          // Payment creation failed — fall back to on-delivery so the order isn't lost
-          console.error('Payment creation failed, falling back:', e);
+          // Fail loudly. Silently placing the order as unpaid used to send food
+          // to the kitchen that nobody was ever asked to pay for, and showed the
+          // rider "betaling in afwachting" instead of "cash". The server has
+          // cancelled the order, so here we just keep the cart and make the
+          // customer choose again.
+          console.error('Payment creation failed:', e);
+          setOnlineUnavailable(true);
+          setPayMethod('ON_DELIVERY');
+          setErr('Online betalen lukt op dit moment niet. Je bestelling is niet geplaatst en er is niets afgeschreven — kies "Bij levering" en bestel opnieuw.');
+          return; // outer finally clears `submitting`
         }
       }
 
-      // On-delivery (or payment fallback): clear the cart and show the success screen.
+      // On-delivery: clear the cart and show the success screen.
       setCart([]); setOrderNote('');
       setView('MENU');
       setSuccess({ id: order.id, token: order.cancelToken, isDelivery, tableLabel });
@@ -462,8 +472,9 @@ export default function OrderPage() {
                       <span className="muted" style={{ fontSize: 13, fontWeight: 600 }}>Betaling</span>
                       <div className="seg">
                         <button type="button" className={`seg-opt ${payMethod === 'ON_DELIVERY' ? 'is-on' : ''}`} onClick={() => setPayMethod('ON_DELIVERY')}>Bij levering</button>
-                        <button type="button" className={`seg-opt ${payMethod === 'ONLINE' ? 'is-on' : ''}`} onClick={() => setPayMethod('ONLINE')}>Online betalen 💳</button>
+                        <button type="button" className={`seg-opt ${payMethod === 'ONLINE' ? 'is-on' : ''}`} disabled={onlineUnavailable} title={onlineUnavailable ? 'Online betalen is nu niet beschikbaar' : undefined} onClick={() => setPayMethod('ONLINE')}>Online betalen 💳</button>
                       </div>
+                      {onlineUnavailable && <div className="muted" style={{ fontSize: 12, color: 'var(--danger)' }}>Online betalen is nu niet beschikbaar.</div>}
                       {payMethod === 'ON_DELIVERY' && <div className="muted" style={{ fontSize: 12 }}>Alleen cash aan de deur — geen kaart.</div>}
                     </div>
                   </div>
