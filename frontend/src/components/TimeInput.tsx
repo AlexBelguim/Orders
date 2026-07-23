@@ -7,10 +7,13 @@ import { useEffect, useState } from 'react';
 // Typing is forgiving — "9", "930", "9:3", "11.30" all normalise on blur:
 //   9    -> 09:00     930  -> 09:30
 //   11   -> 11:00     1130 -> 11:30
-//   24   -> 00:00 (middernacht)
+//   24   -> 00:00, or 24:00 in a "tot" field (see midnightAs24)
 // Out-of-range values are clamped (25 -> 23, :75 -> :59). Empty commits null.
 
-export function normalizeTime(raw: string): string | null {
+// midnightAs24: for "tot" fields, keep midnight as "24:00" instead of "00:00"
+// — same instant, but "open 11:00 tot 24:00" reads right and matches what the
+// customer is shown. Both forms are understood everywhere (see inDailyWindow).
+export function normalizeTime(raw: string, midnightAs24 = false): string | null {
   const s = String(raw || '').trim();
   if (!s.replace(/\D/g, '')) return null;
   let h: number, m: number;
@@ -25,14 +28,16 @@ export function normalizeTime(raw: string): string | null {
     else if (digits.length === 3) { h = Number(digits.slice(0, 1)); m = Number(digits.slice(1)); }
     else { h = Number(digits.slice(0, 2)); m = Number(digits.slice(2, 4)); }
   }
-  if (h === 24 && m === 0) return '00:00'; // "tot 24:00" == middernacht
+  if (h === 24 && m === 0) return midnightAs24 ? '24:00' : '00:00';
   h = Math.min(23, Math.max(0, h));
   m = Math.min(59, Math.max(0, m));
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const out = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  // In a "tot" field midnight is the end of the day, not the start of it.
+  return midnightAs24 && out === '00:00' ? '24:00' : out;
 }
 
 export default function TimeInput({
-  value, onCommit, placeholder = '11:00', width = 78, commitOnChange = false, title,
+  value, onCommit, placeholder = '11:00', width = 78, commitOnChange = false, midnightAs24 = false, title,
 }: {
   value?: string | null;
   onCommit: (v: string | null) => void;
@@ -41,6 +46,8 @@ export default function TimeInput({
   /** Commit as soon as the text parses (for modals where blur may not fire
    *  before a disabled button becomes enabled). Otherwise commit on blur. */
   commitOnChange?: boolean;
+  /** "tot" field: show/store midnight as 24:00 rather than 00:00. */
+  midnightAs24?: boolean;
   title?: string;
 }) {
   const [text, setText] = useState(value || '');
@@ -48,7 +55,7 @@ export default function TimeInput({
   useEffect(() => { setText(value || ''); }, [value]);
 
   const commit = () => {
-    const norm = normalizeTime(text);
+    const norm = normalizeTime(text, midnightAs24);
     setText(norm || '');
     if ((norm || null) !== (value || null)) onCommit(norm);
   };
@@ -68,7 +75,7 @@ export default function TimeInput({
         setText(next);
         if (commitOnChange) {
           const digits = next.replace(/\D/g, '');
-          onCommit(digits.length >= 3 ? normalizeTime(next) : null);
+          onCommit(digits.length >= 3 ? normalizeTime(next, midnightAs24) : null);
         }
       }}
       onBlur={commit}

@@ -127,12 +127,11 @@ function LocationDetail({ loc, profiles, screens, onChange }: { loc: any; profil
             <label>Open van</label>
             <TimeInput value={loc.openFrom} onCommit={(v) => patch({ openFrom: v })} placeholder="11:00" />
             <label>tot</label>
-            {/* stored legacy "24:00" shows as 00:00 — same meaning (tot middernacht) */}
-            <TimeInput value={loc.openUntil === '24:00' ? '00:00' : loc.openUntil} onCommit={(v) => patch({ openUntil: v })} placeholder="00:00" />
+            <TimeInput value={loc.openUntil} onCommit={(v) => patch({ openUntil: v })} placeholder="24:00" midnightAs24 />
             {(loc.openFrom || loc.openUntil) && (
               <button onClick={() => patch({ openFrom: null, openUntil: null })}>✕ Altijd open</button>
             )}
-            <span className="muted" style={{ fontSize: 12 }}>24-uurs. Buiten deze uren kan er niet besteld worden. 00:00 als einde = tot middernacht. Leeg = altijd open.</span>
+            <span className="muted" style={{ fontSize: 12 }}>24-uurs. Buiten deze uren kan er niet besteld worden. Leeg = altijd open.</span>
           </div>
 
           <CommissionEditor loc={loc} onChange={onChange} />
