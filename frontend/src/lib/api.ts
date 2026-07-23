@@ -1,16 +1,27 @@
 const API = import.meta.env.VITE_API_URL || '';
 
+// Set by PasswordProtected once the admin/screen/stats/dispatch code is
+// verified; sent as a header on every request so the server can re-check it
+// on admin-only routes. Public customer/rider endpoints ignore it.
+export const ACCESS_CODE_KEY = 'wervik_access_code';
+
 // Resolve a stored image path (e.g. "/uploads/prod-3-….jpg") to a loadable URL.
 // Absolute URLs (http…) pass through; server-relative paths get the API host.
 export const assetUrl = (p?: string | null) => (!p ? '' : /^https?:\/\//i.test(p) ? p : `${API}${p}`);
 
 // Tiny fetch helpers ----------------------------------------------------------
+function authHeaders(): Record<string, string> {
+  try { const c = sessionStorage.getItem(ACCESS_CODE_KEY); return c ? { 'x-access-code': c } : {}; } catch { return {}; }
+}
 async function jfetch(url: string, opts?: RequestInit) {
-  const r = await fetch(url, opts);
+  const r = await fetch(url, { ...opts, headers: { ...authHeaders(), ...(opts?.headers || {}) } });
   if (!r.ok) {
     let msg = `${r.status}`;
-    try { const j = await r.json(); msg = j.error || msg; } catch {}
-    throw new Error(msg);
+    let body: any;
+    try { body = await r.json(); msg = body.error || msg; } catch {}
+    const err: any = new Error(msg);
+    if (body) err.data = body;
+    throw err;
   }
   return r.json();
 }
@@ -114,11 +125,12 @@ export const getOrders = (params: { status?: string; locationId?: number; prepSc
 export const setOrderStatus = (id: number, status: string) => jfetch(`${API}/api/orders/${id}/status`, json({ status }));
 export const setItemStatus = (orderId: number, itemId: number, status: string) => jfetch(`${API}/api/orders/${orderId}/items/${itemId}/status`, json({ status }));
 export const getOrderByToken = (token: string) => jfetch(`${API}/api/orders/by-token/${token}`);
-export const cancelOrderByToken = (token: string) => jfetch(`${API}/api/orders/by-token/${token}/cancel`, json({}));
+export const getOrderCancelToken = (orderId: number) => jfetch(`${API}/api/orders/${orderId}/cancel-token`);
 
 // Payments --------------------------------------------------------------------
 export const createPayment = (orderId: number) => jfetch(`${API}/api/payments/create`, json({ orderId }));
 export const getPaymentStatus = (orderId: number) => jfetch(`${API}/api/payments/status/${orderId}`);
+export const resendPaymentLink = (orderId: number) => jfetch(`${API}/api/payments/resend/${orderId}`, json({}));
 
 // Stats -----------------------------------------------------------------------
 export const getStats = (params: { locationId?: number; date?: string; from?: string; to?: string } = {}) => {

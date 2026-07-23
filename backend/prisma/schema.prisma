@@ -117,6 +117,17 @@ model PrepScreen {
   slug        String   @unique   // used in /screen/:slug
   sort        Int      @default(0)
   isTakeaway  Boolean  @default(false) // enables Busy/On-the-way flow
+  quickMode   Boolean  @default(false) // one-tap "order done" instead of per-item tracking (e.g. Bar)
+  // Rush pause: while paused, items routed to this screen can't be ordered.
+  // pauseFrom/pauseUntil = recurring daily window ("11:30"–"13:30").
+  // pauseOverride* = one-off manual override (pauzeer-nu / hervat button):
+  // while pauseOverrideUntil is in the future it wins over the schedule, in
+  // whichever direction pauseOverridePaused says.
+  pauseFrom           String?
+  pauseUntil          String?
+  pauseMessage        String?  // customer-facing banner text (optional)
+  pauseOverridePaused Boolean  @default(false)
+  pauseOverrideUntil  DateTime?
   createdAt   DateTime @default(now())
   // back-relations for routing
   categoryDefaults  Category[]

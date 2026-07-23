@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import prisma from '../db.js';
 import { io } from '../index.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 // Statuses where a delivery order is still relevant for dispatch.
 const DISPATCH_ACTIVE = ['NEW', 'IN_PREP', 'READY', 'ASSIGNED', 'PICKED_UP', 'ON_THE_WAY', 'BUSY'];
@@ -11,7 +12,7 @@ export default function dispatchRouter() {
   // ---- Assignment ----
 
   // Assign (or reassign) an agent to an order.
-  r.post('/orders/:id/assign', async (req, res) => {
+  r.post('/orders/:id/assign', requireAdmin, async (req, res) => {
     const orderId = Number(req.params.id);
     const agentId = Number((req.body as any)?.agentId);
     if (!Number.isFinite(agentId)) return res.status(400).json({ error: 'agentId required' });
@@ -35,7 +36,7 @@ export default function dispatchRouter() {
   });
 
   // Unassign.
-  r.post('/orders/:id/unassign', async (req, res) => {
+  r.post('/orders/:id/unassign', requireAdmin, async (req, res) => {
     const orderId = Number(req.params.id);
     await prisma.deliveryAssignment.deleteMany({ where: { orderId } });
     await prisma.order.update({ where: { id: orderId }, data: { assignedAgentId: null } });
@@ -57,12 +58,13 @@ export default function dispatchRouter() {
   });
 
   // List delivery orders relevant for dispatch (active + today's delivered).
-  r.get('/orders', async (_req, res) => {
+  r.get('/orders', requireAdmin, async (_req, res) => {
     const all = await prisma.order.findMany({
       where: { deliveryMode: 'DELIVERY' },
       orderBy: { createdAt: 'desc' },
       include: {
         location: true,
+        payment: true,
         assignment: { include: { agent: true } },
         items: { include: { variant: { include: { product: true } } } },
       },
@@ -146,7 +148,7 @@ export default function dispatchRouter() {
         order: { status: { notIn: ['DELIVERED', 'DONE', 'CANCELLED'] } },
       },
       orderBy: { assignedAt: 'asc' },
-      include: { order: { include: { location: true, items: { include: { variant: { include: { product: true } } } } } } },
+      include: { order: { include: { location: true, payment: true, items: { include: { variant: { include: { product: true } } } } } } },
     });
     // Attach each order's latest customer position.
     const result = [];

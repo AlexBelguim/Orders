@@ -7,28 +7,12 @@ import { createTrackMap, type MapHandle } from '../lib/map';
 
 const API = import.meta.env.VITE_API_URL || '';
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  NEW: { label: 'Ontvangen', color: '#1976D2' },
-  IN_PREP: { label: 'In bereiding', color: '#f59e0b' },
-  BUSY: { label: 'Bezig met maken', color: '#f59e0b' },
-  READY: { label: 'Klaar', color: '#2e7d32' },
-  ASSIGNED: { label: 'Bezorger toegewezen', color: '#9c27b0' },
-  PICKED_UP: { label: 'Opgehaald', color: '#9c27b0' },
-  ON_THE_WAY: { label: 'Onderweg', color: '#1976D2' },
-  DELIVERED: { label: 'Geleverd', color: '#2e7d32' },
-  DONE: { label: 'Afgerond', color: '#2e7d32' },
-  CANCELLED: { label: 'Geannuleerd', color: '#c62828' },
-};
-
 export default function TrackPage() {
   const { token } = useParams();
   const [params] = useSearchParams();
-  const wantsCancel = params.get('action') === 'cancel';
   const wantsShare = params.get('share') === '1';
   const [order, setOrder] = useState<any | null>(null);
   const [err, setErr] = useState('');
-  const [cancelMsg, setCancelMsg] = useState('');
-  const [busy, setBusy] = useState(false);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'sharing' | 'denied' | 'unsupported'>('idle');
   const [agentPos, setAgentPos] = useState<{ lat: number; lon: number } | null>(null);
   const [customerPos, setCustomerPos] = useState<{ lat: number; lon: number } | null>(null);
@@ -123,9 +107,6 @@ export default function TrackPage() {
   if (err) return <div className="track"><div className="card"><h1>Bestelling niet gevonden</h1><p className="muted">{err}</p></div></div>;
   if (!order) return <div className="track"><div className="card"><p className="muted">Laden…</p></div></div>;
 
-  const st = STATUS_LABELS[order.status] || STATUS_LABELS.NEW;
-  const elapsed = Date.now() - new Date(order.createdAt).getTime();
-  const canCancel = order.status !== 'CANCELLED' && elapsed <= 2 * 60 * 1000 && !['DELIVERED', 'DONE'].includes(order.status);
   const hasAssignment = !!(order.assignment || order.assignedAgentId);
   const showMap = hasAssignment && (!!agentPos || !!customerPos);
 
@@ -135,16 +116,6 @@ export default function TrackPage() {
     choices: (it.choices || []).filter((c: any) => !c.appendToEnd).map((c: any) => `${c.menuName}: ${c.optionName || 'geen'}`),
   }));
   const total = (order.items || []).reduce((s: number, it: any) => s + (it.unitPriceCents || 0) * it.qty, 0);
-
-  const doCancel = async () => {
-    setBusy(true); setCancelMsg('');
-    try {
-      await api.cancelOrderByToken(token!);
-      setCancelMsg('Je bestelling is geannuleerd.');
-      await load();
-    } catch (e: any) { setCancelMsg(e?.message.includes('expired') ? 'Annuleren is niet meer mogelijk (na 2 minuten). Bel ons aub.' : (e?.message || 'Annuleren mislukt')); }
-    finally { setBusy(false); }
-  };
 
   const S = order.status;
   const prepared = ['READY', 'ASSIGNED', 'PICKED_UP', 'ON_THE_WAY', 'DELIVERED', 'DONE'].includes(S);
@@ -221,16 +192,6 @@ export default function TrackPage() {
             </div>
             {order.note && <div className="muted" style={{ fontSize: 13, marginTop: 8 }}>Opmerking: {order.note}</div>}
           </div>
-
-          {/* Cancel (within 2 min) */}
-          {(wantsCancel || canCancel) && (
-            <div className="card" style={{ marginTop: 12 }}>
-              <strong>Bestelling annuleren?</strong>
-              <p className="muted" style={{ fontSize: 13 }}>Alleen mogelijk binnen 2 minuten na bestellen.</p>
-              {cancelMsg && <div className={cancelMsg.includes('niet meer') ? 'error' : ''} style={{ marginTop: 8 }}>{cancelMsg}</div>}
-              <button className="danger block" style={{ marginTop: 8 }} disabled={busy} onClick={doCancel}>Annuleer mijn bestelling</button>
-            </div>
-          )}
         </>
       )}
     </div>

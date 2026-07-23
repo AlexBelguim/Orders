@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import prisma from '../db.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function choicesRouter() {
   const r = Router();
+  r.use(requireAdmin);
 
   // ---------- Menus ----------
   r.get('/menus', async (_req, res) => {

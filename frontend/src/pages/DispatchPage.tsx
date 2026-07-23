@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import * as api from '../lib/api';
 import { euro } from '../lib/format';
 import { aggregateOrderItems } from '../lib/menu';
+import PaymentLinkModal from '../components/PaymentLinkModal';
 
 const API = import.meta.env.VITE_API_URL || '';
 
@@ -14,6 +15,10 @@ export default function DispatchPage() {
   const [showDone, setShowDone] = useState(false);
   // Manual reordering of active cards (by order id). Preserved across auto-refresh.
   const [positions, setPositions] = useState<number[]>([]);
+  // Confirm "Geleverd"/"Annuleer" — both are effectively irreversible (no
+  // reopen path once DELIVERED, and CANCELLED triggers a refund for paid orders).
+  const [confirmAction, setConfirmAction] = useState<{ orderId: number; type: 'DELIVERED' | 'CANCELLED' } | null>(null);
+  const [paymentModal, setPaymentModal] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     const [d, a] = await Promise.all([api.getDispatchOrders(), api.getAgents()]);
@@ -36,6 +41,7 @@ export default function DispatchPage() {
     sock.on('newOrder', schedule);
     sock.on('dispatchUpdated', schedule);
     sock.on('orderUpdated', schedule);
+    sock.on('paymentUpdated', schedule);
     return () => { sock.disconnect(); if (t) clearTimeout(t); };
   }, [refresh]);
 
@@ -68,6 +74,12 @@ export default function DispatchPage() {
   const unassign = async (orderId: number) => { await api.unassignAgent(orderId); await refresh(); };
   const status = async (orderId: number, s: string) => { await api.setOrderStatus(orderId, s); await refresh(); };
   const pickup = async (orderId: number) => { await api.markPickup(orderId); await refresh(); };
+  const confirmStatus = async () => {
+    if (!confirmAction) return;
+    const { orderId, type } = confirmAction;
+    setConfirmAction(null);
+    await status(orderId, type);
+  };
 
   return (
     <div className="prep-screen dispatch">
@@ -97,12 +109,13 @@ export default function DispatchPage() {
             onAssign={assign}
             onUnassign={unassign}
             onPickup={pickup}
-            onStatus={status}
+            onStatus={(orderId, type) => setConfirmAction({ orderId, type: type as 'DELIVERED' | 'CANCELLED' })}
             onMove={move}
+            onShowPayment={setPaymentModal}
           />
         ))}
         {showDone && done.map((o) => (
-          <DispatchCard key={o.id} order={o} agents={agents} onAssign={() => {}} onUnassign={() => {}} onPickup={() => {}} onStatus={() => {}} done />
+          <DispatchCard key={o.id} order={o} agents={agents} onAssign={() => {}} onUnassign={() => {}} onPickup={() => {}} onStatus={() => {}} onShowPayment={() => {}} done />
         ))}
       </div>
 
@@ -111,17 +124,43 @@ export default function DispatchPage() {
           <button onClick={() => setShowDone(!showDone)}>{showDone ? '▲' : '▼'} Afgerond vandaag ({done.length})</button>
         </div>
       )}
+
+      {confirmAction && (() => {
+        const o = active.find((x) => x.id === confirmAction.orderId);
+        const isCancel = confirmAction.type === 'CANCELLED';
+        return (
+          <div className="sheet-backdrop" onClick={() => setConfirmAction(null)}>
+            <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+              <div style={{ fontSize: 36, textAlign: 'center', marginBottom: 8 }}>{isCancel ? '✕' : '✓'}</div>
+              <div style={{ fontWeight: 700, fontSize: 19, textAlign: 'center' }}>{isCancel ? 'Bevestig annuleren' : 'Bevestig levering'}</div>
+              <div className="muted" style={{ textAlign: 'center', fontSize: 14, margin: '8px 0 20px' }}>
+                {o ? `Bestelling #${o.id} — ${o.customerName}` : `Bestelling #${confirmAction.orderId}`} {isCancel ? 'annuleren?' : 'als geleverd markeren?'}
+                {isCancel && o?.payMethod === 'ONLINE' && <><br />Online betaling wordt automatisch terugbetaald.</>}
+              </div>
+              <div className="row" style={{ gap: 10 }}>
+                <button style={{ flex: '0 0 auto' }} onClick={() => setConfirmAction(null)}>Terug</button>
+                <button className={isCancel ? 'danger' : 'success'} style={{ flex: 1 }} onClick={confirmStatus}>{isCancel ? 'Ja, annuleren' : 'Ja, geleverd'}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {paymentModal != null && (
+        <PaymentLinkModal orderId={paymentModal} onClose={() => setPaymentModal(null)} onPaid={refresh} />
+      )}
     </div>
   );
 }
 
-function DispatchCard({ order, agents, onAssign, onUnassign, onPickup, onStatus, onMove, done }: {
+function DispatchCard({ order, agents, onAssign, onUnassign, onPickup, onStatus, onMove, onShowPayment, done }: {
   order: any; agents: any[];
   onAssign: (orderId: number, agentId: number) => void;
   onUnassign: (orderId: number) => void;
   onPickup: (orderId: number) => void;
   onStatus: (orderId: number, status: string) => void;
   onMove?: (orderId: number, dir: -1 | 1) => void;
+  onShowPayment: (orderId: number) => void;
   done?: boolean;
 }) {
   const lines = aggregateOrderItems(order.items || []);
@@ -172,7 +211,19 @@ function DispatchCard({ order, agents, onAssign, onUnassign, onPickup, onStatus,
         <div className="row" style={{ justifyContent: 'space-between', marginTop: 6, fontWeight: 600 }}>
           <span>Totaal</span><span>{euro(total)}</span>
         </div>
-        {order.payMethod && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{order.payMethod === 'ONLINE' ? 'Online betaald' : 'Betalen bij levering'}</div>}
+        {!done && (
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {order.payment?.status === 'PAID' ? '✅ Online betaald'
+                : order.payMethod === 'ONLINE' ? '⏳ Betaling in afwachting'
+                : 'Betalen bij levering (cash)'}
+            </span>
+            {order.payment?.status !== 'PAID' && (
+              <button className="chip" onClick={() => onShowPayment(order.id)}>💳 Betaallink</button>
+            )}
+          </div>
+        )}
+        {done && order.payMethod && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{order.payment?.status === 'PAID' ? 'Online betaald' : order.payMethod === 'ONLINE' ? 'Online (niet betaald)' : 'Betaald bij levering'}</div>}
         {order.note && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>📝 {order.note}</div>}
       </div>
 

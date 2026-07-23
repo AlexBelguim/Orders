@@ -2,11 +2,11 @@ import { Router } from 'express';
 import prisma from '../db.js';
 import { io } from '../index.js';
 import { resolvePrepScreen, resolveCommissionCents } from '../services/routing.js';
+import { screenPauseState } from '../util.js';
 import { sendOrderConfirmationEmail } from '../services/email.js';
 import { nanoid } from 'nanoid';
 import type { OrderItemInput } from '../services/routing.js';
-
-const CANCEL_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function ordersRouter() {
   const r = Router();
@@ -38,12 +38,24 @@ export default function ordersRouter() {
     if (isDelivery && !String(body.customerPhone || '').trim()) return res.status(400).json({ error: 'Telefoonnummer verplicht' });
 
     // Build items with resolved prep screen + commission snapshots.
+    const screensById = new Map((await prisma.prepScreen.findMany()).map((s) => [s.id, s]));
     const itemCreates: any[] = [];
     for (const it of itemsIn) {
       const variant = await prisma.variant.findUnique({ where: { id: it.variantId }, include: { product: { include: { category: true } } } });
       if (!variant) continue;
+      if (variant.soldOut) return res.status(409).json({ error: 'Item is uitverkocht', variantId: it.variantId });
       const unitPrice = variant.priceCents + (it.choices || []).reduce((s, c) => s + Number(c.priceCents || 0), 0);
       const prepScreenId = await resolvePrepScreen({ variantId: it.variantId, locationId: location?.id ?? 0, tableId: table?.id ?? null });
+      // Rush pause: the target screen isn't taking orders right now. NB: no
+      // variantId in this error — the client reserves that field for the
+      // sold-out flow (which silently drops the line from the cart).
+      const screen = prepScreenId ? screensById.get(prepScreenId) : null;
+      const pause = screenPauseState(screen);
+      if (screen && pause.paused) {
+        return res.status(409).json({
+          error: `${screen.name} pauzeert momenteel${pause.until ? ` (tot ${pause.until})` : ''} — "${variant.product.name}" kan je nu even niet bestellen.`,
+        });
+      }
       const commissionCents = location ? await resolveCommissionCents({ variantId: it.variantId, locationId: location.id }) : 0;
       itemCreates.push({
         variantId: it.variantId,
@@ -108,8 +120,18 @@ export default function ordersRouter() {
     res.status(201).json(order);
   });
 
-  // List orders. ?status=ALL&locationId=&prepScreenId=&tableId=
-  r.get('/', async (req, res) => {
+  // Public: post-payment redirect page needs just the cancel token for its
+  // "track your order" link, not the full order list (which includes every
+  // other customer's name/phone/items).
+  r.get('/:id/cancel-token', async (req, res) => {
+    const id = Number(req.params.id);
+    const order = await prisma.order.findUnique({ where: { id }, select: { cancelToken: true } });
+    if (!order) return res.status(404).json({ error: 'Niet gevonden' });
+    res.json({ cancelToken: order.cancelToken });
+  });
+
+  // List orders. ?status=ALL&locationId=&prepScreenId=&tableId= — admin/kitchen board.
+  r.get('/', requireAdmin, async (req, res) => {
     const status = String(req.query.status || 'ALL');
     const where: any = {};
     if (status !== 'ALL') where.status = status;
@@ -128,7 +150,9 @@ export default function ordersRouter() {
     res.json(orders);
   });
 
-  // Change status of an order.
+  // Change status of an order. Intentionally public: the delivery-rider phone
+  // page (/bezorger/:code, no access code) also calls this to mark DELIVERED,
+  // and there's no way to tell that request apart from a kitchen screen's.
   r.post('/:id/status', async (req, res) => {
     const id = Number(req.params.id);
     const status = String((req.body as any)?.status ?? '').toUpperCase();
@@ -140,20 +164,30 @@ export default function ordersRouter() {
     if (status === 'CANCELLED') data.cancelledAt = new Date();
     // On any terminal status, release the bezorger so their phone stops showing this order.
     if (terminal) data.assignedAgentId = null;
-    const order = await prisma.order.update({ where: { id }, data, include: { location: true, table: true } });
+    const order = await prisma.order.update({ where: { id }, data, include: { location: true, table: true, payment: true } });
     if (terminal) {
       await prisma.deliveryAssignment.updateMany({
         where: { orderId: id, status: { in: ['ASSIGNED', 'PICKED_UP'] } },
         data: { status: 'DELIVERED', deliveredAt: new Date() },
       }).catch(() => {});
     }
+    // Cancelling a paid-online order needs a refund regardless of who cancelled
+    // it (kitchen screen, dispatch, admin) — this used to only fire from the
+    // customer's own cancel button, which no longer exists.
+    if (status === 'CANCELLED' && order.payment?.status === 'PAID' && order.payment?.providerId) {
+      try {
+        const { refundMolliePayment } = await import('../services/mollie.js');
+        await refundMolliePayment(order.payment.providerId);
+        console.log(`[payments] refund triggered for order #${id}`);
+      } catch (e) { console.error('[payments] refund failed:', e); }
+    }
     io.emit('orderUpdated', { orderId: id, status });
     if (terminal) io.emit('dispatchUpdated', { orderId: id, agentId: null });
     res.json(order);
   });
 
-  // Per-item prep status (persistent, shared across screens/devices).
-  r.post('/:orderId/items/:itemId/status', async (req, res) => {
+  // Per-item prep status (persistent, shared across screens/devices). Kitchen-only.
+  r.post('/:orderId/items/:itemId/status', requireAdmin, async (req, res) => {
     const orderId = Number(req.params.orderId);
     const itemId = Number(req.params.itemId);
     const status = String((req.body as any)?.status ?? '').toUpperCase();
@@ -180,31 +214,6 @@ export default function ordersRouter() {
     });
     if (!order) return res.status(404).json({ error: 'Bestelling niet gevonden' });
     res.json(order);
-  });
-
-  // Cancel within 2 minutes.
-  r.post('/by-token/:token/cancel', async (req, res) => {
-    const order = await prisma.order.findUnique({ where: { cancelToken: req.params.token }, include: { payment: true } });
-    if (!order) return res.status(404).json({ error: 'Bestelling niet gevonden' });
-    if (['DONE', 'DELIVERED', 'CANCELLED'].includes(order.status)) {
-      return res.status(409).json({ error: 'already terminal' });
-    }
-    const elapsed = Date.now() - order.createdAt.getTime();
-    if (elapsed > CANCEL_WINDOW_MS) return res.status(410).json({ error: 'cancel window expired' });
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: { status: 'CANCELLED', closedAt: new Date(), cancelledAt: new Date() },
-    });
-    io.emit('orderUpdated', { orderId: order.id, status: 'CANCELLED' });
-    // If the order was paid online, trigger a Mollie refund.
-    if (order.payment?.status === 'PAID' && order.payment?.providerId) {
-      try {
-        const { refundMolliePayment } = await import('../services/mollie.js');
-        await refundMolliePayment(order.payment.providerId);
-        console.log(`[payments] refund triggered for order #${order.id}`);
-      } catch (e) { console.error('[payments] refund failed:', e); }
-    }
-    res.json({ ok: true, order: updated });
   });
 
   return r;

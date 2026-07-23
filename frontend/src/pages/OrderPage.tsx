@@ -1,10 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import * as api from '../lib/api';
 import { euro } from '../lib/format';
-import { filterTreeByExclusions } from '../lib/menu';
+import { filterTreeByExclusions, screenPauseState } from '../lib/menu';
 
 type Mode = 'TABLE' | 'LOCATION';
+
+const API = import.meta.env.VITE_API_URL || '';
+
+// Pure helper: flip a variant's soldOut flag inside the nested product tree.
+function applySoldOut(profiles: any[], variantId: number, soldOut: boolean) {
+  return profiles.map((profile) => ({
+    ...profile,
+    categories: (profile.categories || []).map((cat: any) => ({
+      ...cat,
+      products: (cat.products || []).map((prod: any) => ({
+        ...prod,
+        variants: (prod.variants || []).map((v: any) => (v.id === variantId ? { ...v, soldOut } : v)),
+      })),
+    })),
+  }));
+}
 
 export default function OrderPage() {
   const { tableCode, locationCode } = useParams();
@@ -20,7 +37,14 @@ export default function OrderPage() {
   const [noteDraft, setNoteDraft] = useState('');
   const [choiceFlow, setChoiceFlow] = useState<any | null>(null);
   const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
+  // Rush pause: live per-screen pause fields, keyed by screen id. Starts empty
+  // (the tree/location payloads embed the state at load time); socket pushes
+  // merge over that when staff hits "pauzeer nu".
+  const [screenStatus, setScreenStatus] = useState<Record<number, any>>({});
+  const cartRef = useRef(cart);
+  useEffect(() => { cartRef.current = cart; }, [cart]);
   const [submitting, setSubmitting] = useState(false);
   const [redirecting, setRedirecting] = useState(false); // online pay → Mollie checkout
   const [success, setSuccess] = useState<any | null>(null);
@@ -39,8 +63,11 @@ export default function OrderPage() {
         let loc: any;
         if (mode === 'TABLE') {
           const table = await api.getTableByCode(tableCode!);
-          loc = table?.location;
           if (!table) { setErr('Tafel niet gevonden'); setLoading(false); return; }
+          // A standalone eat-in table (e.g. the restaurant's own tables) has no
+          // location at all — that's a valid setup, not an error. Fall back to
+          // a plain EAT_IN location so the menu still loads.
+          loc = table.location || { kind: 'EAT_IN' };
         } else {
           loc = await api.getLocationByCode(locationCode!);
         }
@@ -83,6 +110,42 @@ export default function OrderPage() {
       }
     })();
   }, [tableCode, locationCode]);
+
+  // Live sold-out updates: staff can mark an item sold out at any time. Without
+  // this, a page opened before the change would keep showing (and let people
+  // add/keep) an item the kitchen no longer has.
+  useEffect(() => {
+    const sock = io(API, { transports: ['websocket', 'polling'] });
+    sock.on('variantSoldOut', (p: { variantId: number; soldOut: boolean }) => {
+      setProfilesData((prev) => applySoldOut(prev, p.variantId, p.soldOut));
+      if (p.soldOut) {
+        const hit = cartRef.current.find((l) => l.variantId === p.variantId);
+        if (hit) {
+          setCart((c) => c.filter((l) => l.variantId !== p.variantId));
+          setNotice(`"${hit.name}" is niet meer beschikbaar en is uit je mandje verwijderd.`);
+        }
+      }
+    });
+    // Staff paused/resumed a prep screen (rush pause) — update live.
+    sock.on('screenUpdated', (s: any) => {
+      if (s && s.id) setScreenStatus((m) => ({ ...m, [s.id]: s }));
+    });
+    return () => { sock.disconnect(); };
+  }, []);
+
+  // The schedule-based pause flips at a clock time, not on an event — re-render
+  // every 30s so the banner and greyed items appear/disappear on their own.
+  const [, setPauseTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPauseTick((x) => x + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(''), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const isDelivery = location?.kind === 'DELIVERY';
 
@@ -200,6 +263,7 @@ export default function OrderPage() {
   const itemCount = cart.reduce((a, c) => a + c.qty, 0);
   const minCents = location?.minOrderCents || 0;
   const underMin = isDelivery && minCents > 0 && total < minCents;
+  const pausedCartLines = cart.map((l) => ({ line: l, pz: pauseForVariant(l.variantId) })).filter((x) => x.pz.paused);
 
   const submit = async () => {
     if (!cart.length) return;
@@ -232,7 +296,19 @@ export default function OrderPage() {
       setCart([]); setOrderNote('');
       setView('MENU');
       setSuccess({ id: order.id, token: order.cancelToken, isDelivery, tableLabel });
-    } catch (e: any) { setErr(e?.message || 'Bestellen mislukt'); }
+    } catch (e: any) {
+      // Sold out between page load and submit (e.g. socket update missed):
+      // drop the offending line instead of leaving the customer stuck.
+      const vId = e?.data?.variantId;
+      const hit = vId != null ? cart.find((l) => l.variantId === vId) : null;
+      if (hit) {
+        setCart((c) => c.filter((l) => l.variantId !== vId));
+        setProfilesData((prev) => applySoldOut(prev, vId, true));
+        setErr(`"${hit.name}" is uitverkocht en is uit je mandje verwijderd. Controleer je mandje en probeer opnieuw.`);
+      } else {
+        setErr(e?.message || 'Bestellen mislukt');
+      }
+    }
     finally { setSubmitting(false); }
   };
 
@@ -288,6 +364,11 @@ export default function OrderPage() {
 
   return (
     <div className="order-page order-redesign">
+      {notice && (
+        <div className="error" style={{ margin: '10px 14px', background: 'var(--warning, #b45309)', color: '#fff' }}>
+          {notice}
+        </div>
+      )}
       {/* ===== CART / MANDJE VIEW ===== */}
       {view === 'CART' && (
         <>
@@ -312,6 +393,18 @@ export default function OrderPage() {
                 <div className="eatin-banner">
                   <span style={{ fontSize: 16 }}>🍽️</span>
                   <span>Je bestelt aan <strong>{headerTitle.toLowerCase()}</strong>. De ober brengt het — <strong>betalen doe je aan de toog</strong>.</span>
+                </div>
+              )}
+
+              {/* Rush pause: items added before the pause hit can't be ordered now */}
+              {pausedCartLines.length > 0 && (
+                <div className="pause-banner" style={{ marginTop: 12 }}>
+                  <span className="pause-banner-icon">⏸</span>
+                  <span>
+                    {pausedCartLines.map((x) => `"${x.line.name}"`).join(', ')} kan je nu even niet bestellen
+                    {pausedCartLines[0].pz.until ? <> — weer beschikbaar <strong>vanaf {pausedCartLines[0].pz.until}</strong></> : null}.
+                    Haal {pausedCartLines.length === 1 ? 'het' : 'ze'} uit je mandje om de rest al te bestellen.
+                  </span>
                 </div>
               )}
 
@@ -344,8 +437,8 @@ export default function OrderPage() {
                   <div className="col">
                     <input placeholder="Naam *" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
                     <div className="row" style={{ gap: 10 }}>
-                      <input placeholder="Telefoonnummer *" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} style={{ flex: 1 }} />
-                      <input placeholder="Tafelnummer *" value={tableLabel} onChange={(e) => setTableLabel(e.target.value)} style={{ width: 118 }} />
+                      <input placeholder="Telefoonnummer *" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} style={{ flex: 1, minWidth: 0 }} />
+                      <input placeholder="Tafelnummer *" value={tableLabel} onChange={(e) => setTableLabel(e.target.value)} style={{ width: 118, flexShrink: 0 }} />
                     </div>
                     <input placeholder="E-mail (voor bevestiging)" type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
                     <textarea placeholder="Opmerkingen / allergieën" rows={2} value={orderNote} onChange={(e) => setOrderNote(e.target.value)} />
@@ -355,6 +448,7 @@ export default function OrderPage() {
                         <button type="button" className={`seg-opt ${payMethod === 'ON_DELIVERY' ? 'is-on' : ''}`} onClick={() => setPayMethod('ON_DELIVERY')}>Bij levering</button>
                         <button type="button" className={`seg-opt ${payMethod === 'ONLINE' ? 'is-on' : ''}`} onClick={() => setPayMethod('ONLINE')}>Online betalen 💳</button>
                       </div>
+                      {payMethod === 'ON_DELIVERY' && <div className="muted" style={{ fontSize: 12 }}>Alleen cash aan de deur — geen kaart.</div>}
                     </div>
                   </div>
                 </div>
@@ -376,7 +470,12 @@ export default function OrderPage() {
 
               <div className="cart-bar">
                 {err && <div className="error" style={{ marginBottom: 8 }}>{err}</div>}
-                {isDelivery && underMin ? (
+                {pausedCartLines.length > 0 ? (
+                  <button className="cta-blocked" disabled>
+                    <span>⏸ {pausedCartLines[0].pz.screenName || 'Keuken'} gepauzeerd{pausedCartLines[0].pz.until ? ` tot ${pausedCartLines[0].pz.until}` : ''}</span>
+                    <span className="cta-sub">Verwijder de gepauzeerde items om al te bestellen</span>
+                  </button>
+                ) : isDelivery && underMin ? (
                   <button className="cta-blocked" disabled>
                     <span>Nog {euro(minCents - total)} te gaan</span>
                     <span className="cta-sub">Minimum bestelbedrag {euro(minCents)}</span>
@@ -409,6 +508,16 @@ export default function OrderPage() {
             else if (location.deliveryNote) parts.push(location.deliveryNote);
             return parts.length ? <div className="min-order-hint">{parts.join(' — ')}</div> : null;
           })()}
+
+          {/* Rush pause: one banner per paused screen with items on this menu */}
+          {pausedScreenBanners().map((b) => (
+            <div key={b.name} className="pause-banner">
+              <span className="pause-banner-icon">⏸</span>
+              <span>
+                {b.message || <>Onze <strong>{b.name.toLowerCase()}</strong> pauzeert even tijdens de drukte — deze gerechten kan je {b.until ? <>weer bestellen <strong>vanaf {b.until}</strong></> : 'straks weer bestellen'}. De rest van het menu blijft gewoon beschikbaar.</>}
+              </span>
+            </div>
+          ))}
 
           {profilesData.length === 0 && <div className="card"><p className="muted">Het menu is momenteel niet beschikbaar.</p></div>}
 
@@ -547,6 +656,45 @@ export default function OrderPage() {
     return !hasVariants && !!prod.largeCard && !!prod.imageUrl;
   }
 
+  // ----- Rush pause -----------------------------------------------------------
+  // Effective screen for the pause check: product override → category default →
+  // location default. (Per-table route overrides are ignored here; the server
+  // re-checks with them applied at order time.) Live socket state wins over the
+  // screen row embedded in the tree at load time.
+  function effectiveScreen(prod: any, cat: any) {
+    const base = prod?.prepScreen ?? cat?.prepScreen ?? location?.prepScreen ?? null;
+    if (!base) return null;
+    return { ...base, ...(screenStatus[base.id] || {}) };
+  }
+  function pauseFor(prod: any, cat: any) {
+    return screenPauseState(effectiveScreen(prod, cat));
+  }
+  // Same, but starting from a cart line's variantId (scan the loaded menu).
+  function pauseForVariant(variantId: number) {
+    for (const p of profilesData) {
+      for (const cat of p.categories || []) {
+        for (const prod of cat.products || []) {
+          if ((prod.variants || []).some((v: any) => v.id === variantId)) {
+            const scr = effectiveScreen(prod, cat);
+            return { ...screenPauseState(scr), screenName: scr?.name as string | undefined };
+          }
+        }
+      }
+    }
+    return { paused: false, until: null, screenName: undefined };
+  }
+  // One banner per paused screen that actually affects items on this menu.
+  function pausedScreenBanners() {
+    const seen = new Map<number, { name: string; message: string | null; until: string | null }>();
+    profilesData.forEach((p) => (p.categories || []).forEach((cat: any) => (cat.products || []).forEach((prod: any) => {
+      const scr = effectiveScreen(prod, cat);
+      if (!scr || seen.has(scr.id)) return;
+      const st = screenPauseState(scr);
+      if (st.paused) seen.set(scr.id, { name: scr.name, message: scr.pauseMessage || null, until: st.until });
+    })));
+    return [...seen.values()];
+  }
+
   function renderCats(cats: any[], pid: number | null) {
     return cats.map((cat: any) => {
       const cKey = pid != null && profilesData.length > 1 ? `p${pid}-c${cat.id}` : String(cat.id);
@@ -560,9 +708,9 @@ export default function OrderPage() {
           <button onClick={() => toggle(cKey)}>{cat.name} <span style={{ float: 'right' }}>{cOpen ? '▾' : '▸'}</span></button>
           {cOpen && (
             <div className="category-content">
-              {bigs.map((prod: any) => renderProduct(prod))}
+              {bigs.map((prod: any) => renderProduct(prod, cat))}
               {bigs.length > 0 && smalls.length > 0 && <div className="menu-divider">Verder in de kaart</div>}
-              {smalls.map((prod: any) => renderProduct(prod))}
+              {smalls.map((prod: any) => renderProduct(prod, cat))}
             </div>
           )}
         </div>
@@ -575,28 +723,33 @@ export default function OrderPage() {
   // evaluating — before a `const` defined here would be initialized (TDZ).
   function openNote(v: number, k?: string) { setNoteTarget({ vId: v, key: k }); setNoteDraft(''); }
 
-  function renderProduct(prod: any) {
+  function renderProduct(prod: any, cat: any) {
     const hasVariants = prod.variants.length > 1 || prod.variants.some((v: any) => v.name && v.name.trim());
     const img = prod.imageUrl ? api.assetUrl(prod.imageUrl) : '';
     const recommended = !!prod.recommended;
+    // Rush pause: the screen this product routes to isn't taking orders now.
+    const pz = pauseFor(prod, cat);
+    const paused = pz.paused;
+    const pauseLabel = pz.until ? `tot ${pz.until}` : 'even pauze';
 
     // ----- BIG PHOTO CARD: "Groot" + photo (single item) -----
     if (isBigCard(prod)) {
       const v0 = prod.variants[0];
       const so = !!v0.soldOut;
+      const off = so || paused;
       const lines = cart.filter((i) => i.variantId === v0.id);
       const desc = [prod.description, euro(v0.priceCents)].filter(Boolean).join(' · ');
       return (
         <div key={prod.id} className="product-card photo-card-wrap">
-          <div className={`photo-card ${so ? 'sold' : ''}`} style={{ backgroundImage: `url(${img})` }}>
+          <div className={`photo-card ${so ? 'sold' : ''} ${paused ? 'paused' : ''}`} style={{ backgroundImage: `url(${img})` }}>
             {recommended && <span className="pc-badge">★ Aanrader</span>}
-            {so && <span className="pc-sold">Uitverkocht</span>}
+            {so ? <span className="pc-sold">Uitverkocht</span> : paused && <span className="pc-pause">⏸ {pauseLabel}</span>}
             <div className="pc-overlay">
               <div className="pc-info">
                 <div className="pc-name">{prod.name}</div>
                 <div className="pc-desc">{desc}</div>
               </div>
-              <button className="pc-add" disabled={so} onClick={() => { if (!so) add(v0, prod); }}>+</button>
+              <button className="pc-add" disabled={off} onClick={() => { if (!off) add(v0, prod); }}>+</button>
             </div>
           </div>
           {lines.length > 0 && <Lines lines={lines} inc={incLine} dec={decOne} onNote={openNote} />}
@@ -608,21 +761,24 @@ export default function OrderPage() {
     if (!hasVariants && img) {
       const v0 = prod.variants[0];
       const so = !!v0.soldOut;
+      const off = so || paused;
       const lines = cart.filter((i) => i.variantId === v0.id);
       return (
         <div key={prod.id} className="product-card">
-          <div className={`thumb-row ${so ? 'sold' : ''}`}>
+          <div className={`thumb-row ${so ? 'sold' : ''} ${paused ? 'paused' : ''}`}>
             <div className="thumb" style={{ backgroundImage: `url(${img})` }} />
             <div className="thumb-info">
-              <div className="product-name" style={so ? { color: '#9aa0a8' } : undefined}>
+              <div className="product-name" style={off ? { color: '#9aa0a8' } : undefined}>
                 {recommended && <span className="rec-star" title="Aanrader">★</span>}{prod.name}
               </div>
               {so
                 ? <div style={{ marginTop: 2 }}><span className="sold-badge sm">Uitverkocht</span></div>
-                : prod.description && <div className="muted thumb-desc">{prod.description}</div>}
+                : paused
+                  ? <div style={{ marginTop: 2 }}><span className="pause-badge">⏸ {pauseLabel}</span></div>
+                  : prod.description && <div className="muted thumb-desc">{prod.description}</div>}
             </div>
             <div className={`price-pill ${so ? 'struck' : ''}`}>{euro(v0.priceCents)}</div>
-            <button className="primary add-btn small" disabled={so} onClick={() => { if (!so) add(v0, prod); }}>+</button>
+            <button className="primary add-btn small" disabled={off} onClick={() => { if (!off) add(v0, prod); }}>+</button>
           </div>
           {lines.length > 0 && <Lines lines={lines} inc={incLine} dec={decOne} onNote={openNote} />}
         </div>
@@ -638,14 +794,17 @@ export default function OrderPage() {
             {(() => {
               const v0 = prod.variants[0];
               const so = !!v0.soldOut;
+              const off = so || paused;
               return (
-                <div className={`single-row triple ${so ? 'sold' : ''}`}>
+                <div className={`single-row triple ${so ? 'sold' : ''} ${paused ? 'paused' : ''}`}>
                   <div>
-                    <div className="product-name" style={so ? { color: '#9aa0a8' } : undefined}>
+                    <div className="product-name" style={off ? { color: '#9aa0a8' } : undefined}>
                       {recommended && <span className="rec-star" title="Aanrader">★</span>}{prod.name}
                     </div>
                     {so ? (
                       <div style={{ marginTop: 4 }}><span className="sold-badge">Uitverkocht</span></div>
+                    ) : paused ? (
+                      <div style={{ marginTop: 4 }}><span className="pause-badge">⏸ {pauseLabel}</span></div>
                     ) : (
                       <>
                         {prod.description && <div className="muted" style={{ fontSize: 12 }}>{prod.description}</div>}
@@ -654,7 +813,7 @@ export default function OrderPage() {
                     )}
                   </div>
                   <div className={`price-pill ${so ? 'struck' : ''}`}>{euro(v0.priceCents)}</div>
-                  <button className="primary add-btn small" disabled={so} onClick={() => { if (!so) add(v0, prod); }}>+</button>
+                  <button className="primary add-btn small" disabled={off} onClick={() => { if (!off) add(v0, prod); }}>+</button>
                 </div>
               );
             })()}
@@ -664,18 +823,20 @@ export default function OrderPage() {
           <>
             <div className="product-name" style={{ marginBottom: 4 }}>
               {recommended && <span className="rec-star" title="Aanrader">★</span>}{prod.name}
+              {paused && <span className="pause-badge" style={{ marginLeft: 7 }}>⏸ {pauseLabel}</span>}
             </div>
             {prod.description && <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>{prod.description}</div>}
             <div className="variant-group">
               {prod.variants.map((v: any) => {
                 const vLines = cart.filter((l) => l.variantId === v.id);
                 const so = !!v.soldOut;
+                const off = so || paused;
                 return (
                   <div key={v.id}>
-                    <div className={`variant-row multi ${so ? 'sold' : ''}`}>
-                      <div style={so ? { display: 'flex', alignItems: 'center', gap: 7, color: '#9aa0a8' } : undefined}>{v.name}{so && <span className="sold-badge sm">Uitverkocht</span>}</div>
+                    <div className={`variant-row multi ${so ? 'sold' : ''} ${paused ? 'paused' : ''}`}>
+                      <div style={off ? { display: 'flex', alignItems: 'center', gap: 7, color: '#9aa0a8' } : undefined}>{v.name}{so && <span className="sold-badge sm">Uitverkocht</span>}</div>
                       <div className={`price-pill ${so ? 'struck' : ''}`}>{euro(v.priceCents)}</div>
-                      <button className="primary add-btn small" disabled={so} onClick={() => { if (!so) add(v, prod); }}>+</button>
+                      <button className="primary add-btn small" disabled={off} onClick={() => { if (!off) add(v, prod); }}>+</button>
                     </div>
                     {vLines.length > 0 && <Lines lines={vLines} inc={incLine} dec={decOne} onNote={openNote} />}
                   </div>

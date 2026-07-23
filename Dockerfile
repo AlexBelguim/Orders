@@ -42,9 +42,11 @@ RUN npx prisma generate
 # Compile the backend (src -> dist).
 RUN npm run build
 
-# Compile the TS seed (prisma/seed.ts -> dist/seed.js) so it can run at
-# container start without tsx/TypeScript in the runtime image.
-RUN npx tsc prisma/seed.ts \
+# Compile the TS seeds (prisma/seed.ts -> dist/seed.js, seed-menu.ts ->
+# dist/seed-menu.js) so they can run in the runtime image without tsx.
+# seed.js runs at container start; seed-menu.js is the on-demand menu reset:
+#   docker exec wervik node dist/seed-menu.js --yes
+RUN npx tsc prisma/seed.ts prisma/seed-menu.ts \
     --outDir dist \
     --target ES2020 \
     --module ESNext \

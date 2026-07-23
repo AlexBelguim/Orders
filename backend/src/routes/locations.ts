@@ -1,9 +1,29 @@
 import { Router } from 'express';
 import prisma from '../db.js';
 import { genCode, slugify, uniqueSlug } from '../util.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function locationsRouter() {
   const r = Router();
+
+  // Public: the customer order page (/l/:code) looks up its location by code.
+  r.get('/code/:code', async (req, res) => {
+    const code = String(req.params.code).toUpperCase();
+    const loc = await prisma.location.findUnique({
+      where: { code },
+      include: {
+        prepScreen: true,
+        allowedProfiles: { include: { profile: true } },
+        excludedCategories: true,
+        excludedProducts: true,
+      },
+    });
+    if (!loc) return res.status(404).json({ error: 'Locatie niet gevonden' });
+    res.json(loc);
+  });
+
+  // Everything below is admin-only management.
+  r.use(requireAdmin);
 
   r.get('/', async (_req, res) => {
     const list = await prisma.location.findMany({
@@ -18,21 +38,6 @@ export default function locationsRouter() {
       },
     });
     res.json(list);
-  });
-
-  r.get('/code/:code', async (req, res) => {
-    const code = String(req.params.code).toUpperCase();
-    const loc = await prisma.location.findUnique({
-      where: { code },
-      include: {
-        prepScreen: true,
-        allowedProfiles: { include: { profile: true } },
-        excludedCategories: true,
-        excludedProducts: true,
-      },
-    });
-    if (!loc) return res.status(404).json({ error: 'Locatie niet gevonden' });
-    res.json(loc);
   });
 
   r.post('/', async (req, res) => {

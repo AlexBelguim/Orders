@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import * as api from '../lib/api';
 import { euro } from '../lib/format';
 import { aggregateOrderItems } from '../lib/menu';
 import { osmEmbedUrl } from '../lib/map';
+import PaymentLinkModal from '../components/PaymentLinkModal';
+
+const API = import.meta.env.VITE_API_URL || '';
 
 export default function AgentPage() {
   const { code } = useParams();
@@ -11,6 +15,10 @@ export default function AgentPage() {
   const [agent, setAgent] = useState<any | null>(null);
   const [err, setErr] = useState('');
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'sharing' | 'denied' | 'unsupported'>('idle');
+  // Confirm "Geleverd" — there's no reopen path once an order is DELIVERED,
+  // and this is tapped one-handed on a moving bike, so fat-fingers are likely.
+  const [confirmDeliver, setConfirmDeliver] = useState<number | null>(null);
+  const [paymentModal, setPaymentModal] = useState<number | null>(null);
   const watchId = useRef<number | null>(null);
 
   const load = async () => {
@@ -21,6 +29,14 @@ export default function AgentPage() {
     } catch (e: any) { setErr(e?.message || 'Onbekend'); }
   };
   useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); }, [code]);
+
+  // Live payment status — so a rider standing at the door sees the moment a
+  // resent payment link gets paid, without waiting up to 10s for the poll.
+  useEffect(() => {
+    const sock = io(API, { transports: ['websocket', 'polling'] });
+    sock.on('paymentUpdated', () => load());
+    return () => { sock.disconnect(); };
+  }, [code]);
 
   const startGps = () => {
     if (!('geolocation' in navigator)) { setGpsStatus('unsupported'); return; }
@@ -119,17 +135,44 @@ export default function AgentPage() {
                 <div className="row" style={{ justifyContent: 'space-between', marginTop: 6, fontWeight: 600 }}>
                   <span>Totaal</span><span>{euro((order.items || []).reduce((s: number, it: any) => s + (it.unitPriceCents || 0) * it.qty, 0))}</span>
                 </div>
-                {order.payMethod && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{order.payMethod === 'ONLINE' ? 'Online betaald' : 'Betalen bij levering'}</div>}
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {order.payment?.status === 'PAID' ? '✅ Online betaald'
+                      : order.payMethod === 'ONLINE' ? '⏳ Betaling in afwachting'
+                      : 'Betalen bij levering (cash)'}
+                  </span>
+                  {order.payment?.status !== 'PAID' && (
+                    <button className="chip" onClick={() => setPaymentModal(order.id)}>💳 Betaallink</button>
+                  )}
+                </div>
                 {order.note && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>📝 {order.note}</div>}
               </div>
             </div>
             <div className="ticket-actions col">
               {assignment.status !== 'PICKED_UP' && <button className="primary" onClick={async () => { await api.markPickup(order.id); load(); }}>Opgehaald → onderweg</button>}
-              <button className="success" onClick={async () => { await api.setOrderStatus(order.id, 'DELIVERED'); load(); }}>✓ Geleverd</button>
+              <button className="success" onClick={() => setConfirmDeliver(order.id)}>✓ Geleverd</button>
             </div>
           </div>
         );
       })}
+
+      {confirmDeliver != null && (
+        <div className="sheet-backdrop" onClick={() => setConfirmDeliver(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 36, textAlign: 'center', marginBottom: 8 }}>✓</div>
+            <div style={{ fontWeight: 700, fontSize: 19, textAlign: 'center' }}>Bevestig levering</div>
+            <div className="muted" style={{ textAlign: 'center', fontSize: 14, margin: '8px 0 20px' }}>Bestelling #{confirmDeliver} als geleverd markeren?</div>
+            <div className="row" style={{ gap: 10 }}>
+              <button style={{ flex: '0 0 auto' }} onClick={() => setConfirmDeliver(null)}>Terug</button>
+              <button className="success" style={{ flex: 1 }} onClick={async () => { const oid = confirmDeliver; setConfirmDeliver(null); await api.setOrderStatus(oid, 'DELIVERED'); load(); }}>Ja, geleverd</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {paymentModal != null && (
+        <PaymentLinkModal orderId={paymentModal} onClose={() => setPaymentModal(null)} onPaid={load} />
+      )}
     </div>
   );
 }

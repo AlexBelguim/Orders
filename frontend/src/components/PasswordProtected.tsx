@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
-
-const SESSION_KEY = 'wervik_authenticated';
+import { ACCESS_CODE_KEY } from '../lib/api';
 
 export default function PasswordProtected({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    try { setAuthed(sessionStorage.getItem(SESSION_KEY) === '1'); } catch { setAuthed(false); }
+    try { setAuthed(!!sessionStorage.getItem(ACCESS_CODE_KEY)); } catch { setAuthed(false); }
   }, []);
 
   if (authed === null) return null;
   if (authed) return <>{children}</>;
-  return <Gate onOk={() => { try { sessionStorage.setItem(SESSION_KEY, '1'); } catch {} setAuthed(true); }} />;
+  return <Gate onOk={() => setAuthed(true)} />;
 }
 
 function Gate({ onOk }: { onOk: () => void }) {
@@ -25,7 +24,9 @@ function Gate({ onOk }: { onOk: () => void }) {
       const r = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/settings/verify-code`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
       }).then((x) => x.json());
-      if (r.ok) onOk(); else setErr('Onjuiste code');
+      // The server re-checks this code on every admin request; stash it so
+      // subsequent API calls can send it as the x-access-code header.
+      if (r.ok) { try { sessionStorage.setItem(ACCESS_CODE_KEY, code); } catch {} onOk(); } else setErr('Onjuiste code');
     } catch { setErr('Verbindingsfout'); } finally { setBusy(false); }
   };
 

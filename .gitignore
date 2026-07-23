@@ -14,6 +14,10 @@ backend/prisma/*.db
 backend/prisma/*.db-journal
 **/*.db
 **/*.db-journal
+# SQLite WAL/shared-memory sidecars + manual .bak copies
+**/*.db-shm
+**/*.db-wal
+**/*.db.bak-*
 # Uploaded product images
 backend/uploads/*
 !backend/uploads/.gitkeep
@@ -34,4 +38,5 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-backend/nul
+# Windows reserved-name artifacts (accidental `> nul` redirects)
+nul

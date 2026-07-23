@@ -19,11 +19,11 @@ export default function PaymentPendingPage() {
       if (cancelled) return;
       attempts++;
       try {
-        // Get the order to find its cancelToken (for the track link)
+        // Get the order's cancelToken (for the track link) without pulling
+        // every other customer's order.
         if (!token) {
-          const orders = await api.getOrders({ status: 'ALL' });
-          const o = orders.find((x: any) => x.id === orderId);
-          if (o?.cancelToken) setToken(o.cancelToken);
+          const r = await api.getOrderCancelToken(orderId);
+          if (r?.cancelToken) setToken(r.cancelToken);
         }
 
         const r = await api.getPaymentStatus(orderId);

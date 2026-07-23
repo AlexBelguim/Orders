@@ -4,6 +4,8 @@ import fs from 'fs';
 import prisma from '../db.js';
 import { euroToCents } from '../util.js';
 import { UPLOADS_DIR, ensureUploadsDir } from '../uploads.js';
+import { requireAdmin } from '../middleware/auth.js';
+import { io } from '../index.js';
 
 export default function productsRouter() {
   const r = Router();
@@ -36,6 +38,10 @@ export default function productsRouter() {
     });
     res.json({ id: profile.id, name: profile.name, categories: cats });
   });
+
+  // Everything below is menu/catalogue management — staff only. The tree
+  // above stays public because the customer order page reads it directly.
+  r.use(requireAdmin);
 
   // ---------- Categories ----------
   r.post('/categories', async (req, res) => {
@@ -201,6 +207,9 @@ export default function productsRouter() {
     if ((req.body as any)?.priceCents !== undefined) data.priceCents = Number((req.body as any).priceCents);
     if ((req.body as any)?.soldOut !== undefined) data.soldOut = !!((req.body as any).soldOut);
     const updated = await prisma.variant.update({ where: { id }, data });
+    // Live-update any open customer order pages: a stale page could otherwise
+    // let someone add/keep a now-unavailable item in their cart.
+    if (data.soldOut !== undefined) io.emit('variantSoldOut', { variantId: id, soldOut: updated.soldOut });
     res.json(updated);
   });
 

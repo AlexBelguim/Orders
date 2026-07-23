@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import * as api from '../lib/api';
-import { aggregateOrderItems, aggregateAppendToEnd } from '../lib/menu';
+import { aggregateOrderItems, aggregateAppendToEnd, screenPauseState, nextAt } from '../lib/menu';
 
 const API = import.meta.env.VITE_API_URL || '';
 
@@ -22,10 +22,21 @@ export default function PrepScreenPage() {
   const [live, setLive] = useState(false); // brief "synced" flash indicator
   const [positions, setPositions] = useState<number[]>([]); // manual ordering (order ids)
   const [showOnWay, setShowOnWay] = useState(true);
-  // Confirmation modal for "Geleverd" — prevents fat-finger deliveries.
+  // Confirmation modals for "Geleverd" / "Annuleer" — prevent fat-finger taps
+  // (cancelling now also triggers an irreversible refund for paid orders).
   // Must stay above the early `if (!screen) return` below: hooks can never be
   // called conditionally, or the hook count changes between renders (React #310).
   const [confirmDeliver, setConfirmDeliver] = useState<number | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState<number | null>(null);
+  // Rush pause: "Pauzeer" picker modal + a 30s tick so the scheduled window
+  // flips the header state without a reload.
+  const [showPause, setShowPause] = useState(false);
+  const [pauseCustom, setPauseCustom] = useState('');
+  const [, setPauseTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPauseTick((x) => x + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
   const screenRef = useRef<any>(null);
   screenRef.current = screen;
 
@@ -42,8 +53,16 @@ export default function PrepScreenPage() {
     if (o.location?.coordinatorScreenId === sc.id) return true; // coordinator always shows
     const screenItems = (o.items || []).filter((it: any) => it.prepScreenId === sc.id);
     if (screenItems.length === 0) return false;
-    // Non-coordinator: only show if at least one item not yet DONE
-    return screenItems.some((it: any) => it.itemStatus !== 'DONE');
+    if (screenItems.some((it: any) => it.itemStatus !== 'DONE')) return true;
+    // All our items are done. If a coordinator screen exists for this order's
+    // location, finalizing is its job — we can drop it. Otherwise WE are the
+    // only screen and nobody else will ever click "Bestelling klaar", so keep
+    // showing the ticket (button included) until the order itself is
+    // actually finalized — otherwise it gets stuck at BUSY/IN_PREP forever,
+    // invisible to staff, and never counted in stats.
+    if (o.location?.coordinatorScreenId) return false;
+    const finalized = ['READY', 'DONE', 'DELIVERED', 'CANCELLED', 'ASSIGNED', 'PICKED_UP', 'ON_THE_WAY'].includes(o.status);
+    return !finalized;
   }, []);
 
   const refresh = useCallback(async (s?: any) => {
@@ -86,6 +105,10 @@ export default function PrepScreenPage() {
     sock.on('orderUpdated', schedule);
     sock.on('itemUpdated', schedule);
     sock.on('dispatchUpdated', schedule);
+    // Pause toggled from another device (admin, other tablet) — reload our row.
+    sock.on('screenUpdated', (s: any) => {
+      if (s && s.id === screenRef.current?.id) setScreen((cur: any) => cur ? { ...cur, ...s } : cur);
+    });
     return () => { sock.disconnect(); if (t) clearTimeout(t); };
   }, [refresh]);
 
@@ -115,11 +138,31 @@ export default function PrepScreenPage() {
     await refresh();
   };
 
+  // Quick-mode screens (e.g. Bar) skip per-item tracking: one tap marks every
+  // item for this screen done and finalizes the order in one go — mirrors the
+  // normal "mark item done" + "Bestelling klaar" flow, just batched.
+  const quickComplete = async (orderId: number, itemIds: number[], deliveryMode: string) => {
+    await Promise.all(itemIds.map((itemId) => api.setItemStatus(orderId, itemId, 'DONE')));
+    await api.setOrderStatus(orderId, deliveryMode === 'EAT_IN' ? 'DONE' : 'READY');
+    await refresh();
+  };
+  const quickReopen = async (orderId: number, itemIds: number[]) => {
+    await Promise.all(itemIds.map((itemId) => api.setItemStatus(orderId, itemId, 'PENDING')));
+    await refresh();
+  };
+
   const confirmDelivered = async () => {
     if (confirmDeliver == null) return;
     const oid = confirmDeliver;
     setConfirmDeliver(null);
     await setStatus(oid, 'DELIVERED');
+  };
+
+  const confirmCancelled = async () => {
+    if (confirmCancel == null) return;
+    const oid = confirmCancel;
+    setConfirmCancel(null);
+    await setStatus(oid, 'CANCELLED');
   };
 
   // Coordinator: assign a bezorger + start delivery
@@ -130,17 +173,61 @@ export default function PrepScreenPage() {
     await refresh();
   };
 
+  // ----- Rush pause ("Pauzeer" / "Hervat") -----
+  const pauseState = screenPauseState(screen);
+  const doPause = async (until: Date) => {
+    const updated = await api.updatePrepScreen(screen.id, { pauseOverridePaused: true, pauseOverrideUntil: until.toISOString() });
+    setScreen(updated); setShowPause(false); setPauseCustom('');
+  };
+  const doResume = async () => {
+    const ovUntil = screen.pauseOverrideUntil ? new Date(screen.pauseOverrideUntil) : null;
+    const manualActive = !!(ovUntil && ovUntil.getTime() > Date.now() && screen.pauseOverridePaused);
+    // Manual pause → just clear it. Scheduled pause → force-open until the
+    // window would have ended anyway (tomorrow's window runs normally again).
+    const payload = manualActive
+      ? { pauseOverridePaused: false, pauseOverrideUntil: null }
+      : { pauseOverridePaused: false, pauseOverrideUntil: nextAt(screen.pauseUntil)?.toISOString() ?? null };
+    const updated = await api.updatePrepScreen(screen.id, payload);
+    setScreen(updated);
+  };
+
   return (
     <div className="prep-screen">
       <div className="prep-header">
         <h1>{screen.name}</h1>
         {screen.isTakeaway && <span className="chip" style={{ background: 'var(--warning)' }}>Afhalen</span>}
         {live && <span className="chip" style={{ background: 'var(--success)', color: '#fff' }}>● live</span>}
+        {pauseState.paused && <span className="chip pause-chip">⏸ Gepauzeerd{pauseState.until ? ` tot ${pauseState.until}` : ''}</span>}
         <div className="spacer" />
+        {pauseState.paused
+          ? <button className="btn-resume" onClick={doResume}>▶ Hervat bestellingen</button>
+          : <button className="btn-pause" onClick={() => setShowPause(true)}>⏸ Pauzeer</button>}
         <a href="/admin" className="chip">← Beheer</a>
         <button onClick={() => refresh()}>↻ Vernieuw</button>
         <label className="muted"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> Toon afgerond</label>
       </div>
+
+      {showPause && (
+        <div className="sheet-backdrop" onClick={() => setShowPause(false)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: 6 }}>⏸ {screen.name} pauzeren</h3>
+            <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>
+              Klanten kunnen niets bestellen dat op dit scherm bereid wordt, tot de gekozen tijd. De rest van het menu blijft gewoon bestelbaar.
+            </p>
+            <div className="pause-quick">
+              <button onClick={() => doPause(new Date(Date.now() + 30 * 60000))}>30 min</button>
+              <button onClick={() => doPause(new Date(Date.now() + 60 * 60000))}>1 uur</button>
+              <button onClick={() => doPause(new Date(Date.now() + 120 * 60000))}>2 uur</button>
+            </div>
+            <div className="row" style={{ marginTop: 12 }}>
+              <label className="muted" style={{ fontSize: 13 }}>tot</label>
+              <input type="time" value={pauseCustom} onChange={(e) => setPauseCustom(e.target.value)} style={{ flex: 1 }} />
+              <button className="primary" disabled={!pauseCustom} onClick={() => { const d = nextAt(pauseCustom); if (d) doPause(d); }}>Pauzeer</button>
+            </div>
+            <button style={{ width: '100%', marginTop: 14 }} onClick={() => setShowPause(false)}>Annuleren</button>
+          </div>
+        </div>
+      )}
 
       {(() => {
         // Split tickets into "in prep" and "onderweg" so on-the-road orders don't clutter the prep area.
@@ -164,6 +251,9 @@ export default function PrepScreenPage() {
                   onAssignAgent={assignAgent}
                   onSendOnWay={sendOnWay}
                   onConfirmDeliver={(oid: number) => setConfirmDeliver(oid)}
+                  onConfirmCancel={(oid: number) => setConfirmCancel(oid)}
+                  onQuickComplete={quickComplete}
+                  onQuickReopen={quickReopen}
                 />
               ))}
               {showDone && doneTickets.map((o) => {
@@ -171,7 +261,7 @@ export default function PrepScreenPage() {
                 // rolling items back. Delivered / fully-done orders stay read-only.
                 const reopenable = !['DELIVERED', 'DONE', 'CANCELLED'].includes(o.status);
                 return (
-                  <Ticket key={o.id} order={o} screen={screen} agents={agents} onMove={() => {}} onStatus={setStatus} onCycleItem={reopenable ? cycleItem : () => {}} onAssignAgent={() => {}} onSendOnWay={() => {}} onConfirmDeliver={() => {}} done reopenable={reopenable} />
+                  <Ticket key={o.id} order={o} screen={screen} agents={agents} onMove={() => {}} onStatus={setStatus} onCycleItem={reopenable ? cycleItem : () => {}} onAssignAgent={() => {}} onSendOnWay={() => {}} onConfirmDeliver={() => {}} onConfirmCancel={() => {}} onQuickComplete={quickComplete} onQuickReopen={reopenable ? quickReopen : async () => {}} done reopenable={reopenable} />
                 );
               })}
             </div>
@@ -197,6 +287,9 @@ export default function PrepScreenPage() {
                         onAssignAgent={assignAgent}
                         onSendOnWay={sendOnWay}
                         onConfirmDeliver={(oid: number) => setConfirmDeliver(oid)}
+                        onConfirmCancel={(oid: number) => setConfirmCancel(oid)}
+                        onQuickComplete={quickComplete}
+                        onQuickReopen={quickReopen}
                       />
                     ))}
                   </div>
@@ -226,6 +319,27 @@ export default function PrepScreenPage() {
           </div>
         );
       })()}
+
+      {/* Confirm "Annuleer" modal — cancelling now also triggers a refund for paid orders. */}
+      {confirmCancel != null && (() => {
+        const o = tickets.find((t) => t.id === confirmCancel) || doneTickets.find((t) => t.id === confirmCancel);
+        return (
+          <div className="sheet-backdrop" onClick={() => setConfirmCancel(null)}>
+            <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+              <div style={{ fontSize: 36, textAlign: 'center', marginBottom: 8 }}>✕</div>
+              <div style={{ fontWeight: 700, fontSize: 19, textAlign: 'center' }}>Bevestig annuleren</div>
+              <div className="muted" style={{ textAlign: 'center', fontSize: 14, margin: '8px 0 20px' }}>
+                {o ? `Bestelling ${o.table?.name || o.tableLabel || '#' + o.id}` : `Bestelling #${confirmCancel}`} annuleren?
+                {o?.payMethod === 'ONLINE' && <><br />Online betaling wordt automatisch terugbetaald.</>}
+              </div>
+              <div className="row" style={{ gap: 10 }}>
+                <button style={{ flex: '0 0 auto' }} onClick={() => setConfirmCancel(null)}>Terug</button>
+                <button className="danger" style={{ flex: 1 }} onClick={confirmCancelled}>Ja, annuleren</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -245,7 +359,7 @@ function isCoordinatorOrder(order: any, screen: any): boolean {
   return order.location?.coordinatorScreenId === screen.id;
 }
 
-function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssignAgent, onSendOnWay, onConfirmDeliver, done, reopenable }: {
+function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssignAgent, onSendOnWay, onConfirmDeliver, onConfirmCancel, onQuickComplete, onQuickReopen, done, reopenable }: {
   order: any; screen: any; agents: any[];
   onMove: (dir: -1 | 1) => void;
   onStatus: (orderId: number, status: string) => void;
@@ -253,12 +367,19 @@ function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssign
   onAssignAgent: (orderId: number, agentId: number) => void;
   onSendOnWay: (orderId: number, agentId: number | null) => void;
   onConfirmDeliver: (orderId: number) => void;
+  onConfirmCancel: (orderId: number) => void;
+  onQuickComplete: (orderId: number, itemIds: number[], deliveryMode: string) => void;
+  onQuickReopen: (orderId: number, itemIds: number[]) => void;
   done?: boolean;
   reopenable?: boolean;
 }) {
   const screenId = screen.id;
   const coordinator = isCoordinatorOrder(order, screen);
   const items = coordinator ? (order.items || []) : (order.items || []).filter((it: any) => it.prepScreenId === screenId);
+  // Skip per-item tracking for fast-turnover screens (e.g. Bar) — one tap for
+  // the whole order instead of clicking through each item. Coordinator
+  // screens keep per-item tracking since they display other screens' progress too.
+  const quickMode = !!screen.quickMode && !coordinator;
   const lines = aggregateOrderItems(items);
   const extras = aggregateAppendToEnd(items);
   const when = new Date(order.createdAt);
@@ -299,7 +420,7 @@ function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssign
       {done && reopenable && <div className="ticket-badge reopen">✓ Jouw deel is klaar — tik een item om het terug te zetten</div>}
 
       <div className="ticket-body">
-        <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Klik op een item: wachtend → bezig → klaar → wachtend</div>
+        {!quickMode && <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Klik op een item: wachtend → bezig → klaar → wachtend</div>}
         {lines.map((l) => {
           const matchingItems = items.filter((it: any) => {
             const label = (it.variant?.product?.name || '') + (it.variant?.name ? ` ${it.variant.name}` : '');
@@ -310,7 +431,7 @@ function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssign
           const itemScreenId = firstItem?.prepScreenId;
           const isOurs = itemScreenId === screenId;
           const screenName = itemScreenId ? (screenNameFor(itemScreenId, order) || 'andere') : '—';
-          const canCycle = isOurs && (!done || reopenable);
+          const canCycle = isOurs && (!done || reopenable) && !quickMode;
           const deco = itemStatus === 'DONE' ? 'line-through' : 'none';
 
           return (
@@ -396,8 +517,15 @@ function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssign
             </>
           )}
 
-          {/* Non-coordinator (kitchen/bar) — when all items DONE, signal ready */}
-          {!coordinator && (
+          {/* Non-coordinator, quick mode (e.g. Bar) — one tap for the whole order. */}
+          {!coordinator && quickMode && (
+            <button className="success" onClick={() => onQuickComplete(order.id, items.map((it: any) => it.id), order.deliveryMode)}>
+              ✓ Bestelling klaar{order.deliveryMode !== 'EAT_IN' ? ' voor afhalen' : ''}
+            </button>
+          )}
+
+          {/* Non-coordinator, per-item tracking — when all items DONE, signal ready */}
+          {!coordinator && !quickMode && (
             <>
               {!allOursDone && <div className="muted" style={{ fontSize: 12 }}>Klik items aan om ze klaar te melden.</div>}
               {allOursDone && (
@@ -408,7 +536,14 @@ function Ticket({ order, screen, agents, onMove, onStatus, onCycleItem, onAssign
             </>
           )}
 
-          <button className="danger" onClick={() => onStatus(order.id, 'CANCELLED')}>✕ Annuleer</button>
+          <button className="danger" onClick={() => onConfirmCancel(order.id)}>✕ Annuleer</button>
+        </div>
+      )}
+
+      {/* Quick-mode reopen: a single button instead of per-item click-to-cycle. */}
+      {done && reopenable && quickMode && (
+        <div className="ticket-actions col" style={{ gap: 6 }}>
+          <button onClick={() => onQuickReopen(order.id, items.map((it: any) => it.id))}>↺ Heropenen</button>
         </div>
       )}
     </div>

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import prisma from '../db.js';
 import { io } from '../index.js';
 import { testEmailConnection } from '../services/email.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 // Order/dispatch tables that hold transactional sales data, in a safe
 // delete order (children before parents). Product/menu tables are NOT
@@ -19,7 +20,8 @@ export default function settingsRouter() {
   const r = Router();
 
   // Get one or many settings. ?keys=PUBLIC_URL,ACCESS_CODE or no keys → all.
-  r.get('/', async (req, res) => {
+  // Admin-only: full listing includes SMTP/Mollie secrets.
+  r.get('/', requireAdmin, async (req, res) => {
     const keys = (req.query.keys as string | undefined)?.split(',').map((s) => s.trim()).filter(Boolean);
     const rows = await prisma.setting.findMany(keys && keys.length ? { where: { key: { in: keys } } } : undefined);
     const obj: Record<string, string> = {};
@@ -28,15 +30,15 @@ export default function settingsRouter() {
   });
 
   // Upsert a single key/value.
-  r.put('/:key', async (req, res) => {
-    const key = req.params.key;
+  r.put('/:key', requireAdmin, async (req, res) => {
+    const key = String(req.params.key);
     const value = String((req.body as any)?.value ?? '');
     const saved = await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
     res.json(saved);
   });
 
   // Bulk upsert (array of {key,value} or an object).
-  r.put('/', async (req, res) => {
+  r.put('/', requireAdmin, async (req, res) => {
     const body = req.body as any;
     const entries: { key: string; value: string }[] = Array.isArray(body)
       ? body.map((e: any) => ({ key: String(e.key), value: String(e.value ?? '') }))
@@ -48,7 +50,7 @@ export default function settingsRouter() {
   });
 
   // Test SMTP connection.
-  r.post('/test-email', async (_req, res) => {
+  r.post('/test-email', requireAdmin, async (_req, res) => {
     try {
       const ok = await testEmailConnection();
       res.json({ ok });
@@ -73,7 +75,7 @@ export default function settingsRouter() {
     res.json({ variantIds: ids });
   });
 
-  r.put('/sold-out', async (req, res) => {
+  r.put('/sold-out', requireAdmin, async (req, res) => {
     const ids = Array.isArray((req.body as any)?.variantIds) ? (req.body as any).variantIds.map(Number).filter(Number.isFinite) : [];
     await prisma.setting.upsert({ where: { key: 'SOLD_OUT_VARIANT_IDS' }, update: { value: JSON.stringify(ids) }, create: { key: 'SOLD_OUT_VARIANT_IDS', value: JSON.stringify(ids) } });
     io.emit('soldOutUpdated', ids);
@@ -83,18 +85,17 @@ export default function settingsRouter() {
   // Wipe all orders, items, payments, assignments and GPS pings.
   // Products, menus, locations, tables, agents, screens and settings are kept.
   // Guarded by a typed confirmation string the UI must send ("DELETE-ALL-ORDERS").
-  r.post('/clear-orders', async (req, res) => {
+  r.post('/clear-orders', requireAdmin, async (req, res) => {
     const confirm = String((req.body as any)?.confirm ?? '');
     if (confirm !== 'DELETE-ALL-ORDERS') {
       return res.status(400).json({ error: 'Bevestiging ontbreekt of is onjuist.' });
     }
-    const deleted: Record<string, number> = {};
     // Delete in dependency order inside one transaction.
-    await prisma.$transaction(
-      SALES_TABLES.map((model) =>
-        (prisma as any)[model].deleteMany({}).then((r: any) => { deleted[model] = r.count; })
-      ),
+    const results = await prisma.$transaction(
+      SALES_TABLES.map((model) => (prisma as any)[model].deleteMany({})),
     );
+    const deleted: Record<string, number> = {};
+    SALES_TABLES.forEach((model, i) => { deleted[model] = results[i].count; });
     io.emit('ordersCleared', {});
     res.json({ ok: true, deleted });
   });

@@ -1,18 +1,12 @@
 import { Router } from 'express';
 import prisma from '../db.js';
 import { genCode } from '../util.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function tablesRouter() {
   const r = Router();
 
-  r.get('/', async (_req, res) => {
-    const list = await prisma.table.findMany({
-      orderBy: [{ id: 'asc' }],
-      include: { location: true, routeOverrides: { include: { fromScreen: true, toScreen: true } } },
-    });
-    res.json(list);
-  });
-
+  // Public: the customer order page (/t/:code) looks up its table by code.
   r.get('/code/:code', async (req, res) => {
     const code = String(req.params.code).toUpperCase();
     const table = await prisma.table.findUnique({
@@ -21,6 +15,17 @@ export default function tablesRouter() {
     });
     if (!table || !table.active) return res.status(404).json({ error: 'Tafel niet gevonden' });
     res.json(table);
+  });
+
+  // Everything below is admin-only management.
+  r.use(requireAdmin);
+
+  r.get('/', async (_req, res) => {
+    const list = await prisma.table.findMany({
+      orderBy: [{ id: 'asc' }],
+      include: { location: true, routeOverrides: { include: { fromScreen: true, toScreen: true } } },
+    });
+    res.json(list);
   });
 
   r.post('/', async (req, res) => {

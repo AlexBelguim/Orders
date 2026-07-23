@@ -1,7 +1,37 @@
 import { Router } from 'express';
+import QRCode from 'qrcode';
 import prisma from '../db.js';
 import { io } from '../index.js';
 import { createMolliePayment, checkMolliePayment, refundMolliePayment } from '../services/mollie.js';
+import { sendPaymentLinkEmail } from '../services/email.js';
+
+// Shared by /create (customer's own checkout) and /resend (rider/staff
+// triggering a link for a customer who can't pay cash at the door).
+async function startPayment(orderId: number) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: true, location: true },
+  });
+  if (!order) throw Object.assign(new Error('order not found'), { status: 404 });
+  if (['DELIVERED', 'DONE', 'CANCELLED'].includes(order.status)) {
+    throw Object.assign(new Error('order is already closed'), { status: 409 });
+  }
+
+  const totalCents = order.items.reduce((s: number, it: any) => s + (it.unitPriceCents || 0) * it.qty, 0);
+  if (totalCents <= 0) throw Object.assign(new Error('order total is zero'), { status: 400 });
+
+  const description = `Bestelling #${order.id} — ${order.location?.name || 'Up t Gemak'}`;
+  const { checkoutUrl, mollieId } = await createMolliePayment(orderId, totalCents, description);
+
+  await prisma.payment.upsert({
+    where: { orderId },
+    update: { providerId: mollieId, amountCents: totalCents, status: 'PENDING', provider: 'MOLLIE' },
+    create: { orderId, provider: 'MOLLIE', providerId: mollieId, amountCents: totalCents, status: 'PENDING' },
+  });
+  await prisma.order.update({ where: { id: orderId }, data: { payMethod: 'ONLINE' } });
+
+  return { order, checkoutUrl, mollieId };
+}
 
 export default function paymentsRouter() {
   const r = Router();
@@ -11,39 +41,38 @@ export default function paymentsRouter() {
   r.post('/create', async (req, res) => {
     const orderId = Number((req.body as any)?.orderId);
     if (!Number.isFinite(orderId)) return res.status(400).json({ error: 'orderId required' });
-
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      include: { items: true, location: true },
-    });
-    if (!order) return res.status(404).json({ error: 'order not found' });
-    if (['DELIVERED', 'DONE', 'CANCELLED'].includes(order.status)) {
-      return res.status(409).json({ error: 'order is already closed' });
-    }
-
-    // Calculate total from item snapshots
-    const totalCents = order.items.reduce((s: number, it: any) => s + (it.unitPriceCents || 0) * it.qty, 0);
-    if (totalCents <= 0) return res.status(400).json({ error: 'order total is zero' });
-
-    const description = `Bestelling #${order.id} — ${order.location?.name || 'Up t Gemak'}`;
-
     try {
-      const { checkoutUrl, mollieId } = await createMolliePayment(orderId, totalCents, description);
-
-      // Store the payment record
-      await prisma.payment.upsert({
-        where: { orderId },
-        update: { providerId: mollieId, amountCents: totalCents, status: 'PENDING', provider: 'MOLLIE' },
-        create: { orderId, provider: 'MOLLIE', providerId: mollieId, amountCents: totalCents, status: 'PENDING' },
-      });
-
-      // Mark the order as ONLINE payment
-      await prisma.order.update({ where: { id: orderId }, data: { payMethod: 'ONLINE' } });
-
+      const { checkoutUrl, mollieId } = await startPayment(orderId);
       res.json({ checkoutUrl, mollieId });
     } catch (e: any) {
       console.error('[payments] create failed:', e?.message);
-      res.status(502).json({ error: 'Betaling kon niet worden gestart', detail: e?.message });
+      res.status(e?.status || 502).json({ error: e?.status ? e.message : 'Betaling kon niet worden gestart', detail: e?.message });
+    }
+  });
+
+  // Public: delivery rider (or dispatch staff) triggers this when a customer
+  // can't pay cash at the door. Creates a fresh payment link, shows it as a
+  // QR code the rider can hold up right there, and emails it too if the
+  // customer left an address (optional on the order, so can't rely on it alone).
+  r.post('/resend/:orderId', async (req, res) => {
+    const orderId = Number(req.params.orderId);
+    if (!Number.isFinite(orderId)) return res.status(400).json({ error: 'invalid order id' });
+    try {
+      const { order, checkoutUrl } = await startPayment(orderId);
+      const qrDataUrl = await QRCode.toDataURL(checkoutUrl, { margin: 1, width: 320 });
+
+      let emailed = false;
+      if (order.customerEmail) {
+        try {
+          await sendPaymentLinkEmail({ to: order.customerEmail, order: { id: order.id, locationName: order.location?.name || 'Up t Gemak' }, checkoutUrl });
+          emailed = true;
+        } catch (e) { console.error('[payments] resend email failed:', e); }
+      }
+
+      res.json({ checkoutUrl, qrDataUrl, emailed, hasEmail: !!order.customerEmail });
+    } catch (e: any) {
+      console.error('[payments] resend failed:', e?.message);
+      res.status(e?.status || 502).json({ error: e?.status ? e.message : 'Betaallink kon niet worden aangemaakt', detail: e?.message });
     }
   });
 

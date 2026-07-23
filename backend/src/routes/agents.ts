@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import prisma from '../db.js';
 import { genCode } from '../util.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function agentsRouter() {
   const r = Router();
+  r.use(requireAdmin);
 
   r.get('/', async (_req, res) => {
     const list = await prisma.deliveryAgent.findMany({

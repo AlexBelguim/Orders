@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import prisma from '../db.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function profilesRouter() {
   const r = Router();
+  r.use(requireAdmin);
 
   r.get('/', async (_req, res) => {
     const list = await prisma.profile.findMany({ orderBy: { id: 'asc' }, include: { categories: { orderBy: { sort: 'asc' } } } });

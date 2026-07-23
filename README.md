@@ -13,7 +13,7 @@ Vervangt de oude `kermis/` (statische HTML + Formspree) en `qr-orders/` (React/P
 | `/stats` | Statistieken + commissie per locatie/dag | Code |
 | `/l/:code` | Klant bestelpagina — **levering** (terras QR) | Publiek |
 | `/t/:code` | Klant bestelpagina — **restaurant** (tafel QR) | Publiek |
-| `/o/:token` | Klant volgt/annuleert bestelling (e-mail link) | Publiek |
+| `/o/:token` | Klant volgt bestelling (e-mail link) | Publiek |
 
 Standaard toegangscode: `thisdudestinky` (wijzig in Admin → Instellingen).
 
@@ -60,9 +60,8 @@ veranderen nooit als je regels later aanpast.
 
 ## E-mail
 
-Bevestigingsmail bij leverings-bestellingen met **Volg**- en **Annuleer**-links.
-Annuleren enkel binnen 2 minuten. SMTP via Gmail app-wachtwoord
-(Admin → Instellingen → E-mail).
+Bevestigingsmail bij leverings-bestellingen met een **Volg**-link.
+SMTP via Gmail app-wachtwoord (Admin → Instellingen → E-mail).
 
 Configureer in Admin → Instellingen:
 - SMTP host: `smtp.gmail.com`, poort `587`

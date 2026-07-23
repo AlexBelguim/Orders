@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import prisma from '../db.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 export default function statsRouter() {
   const r = Router();
+  r.use(requireAdmin);
 
   // Aggregated sales + commission. ?locationId=&date=YYYY-MM-DD | &from=&to=
   // Only counts terminal orders (DELIVERED, DONE).

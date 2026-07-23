@@ -49,7 +49,7 @@ function buildOrderTable(lines: OrderSummaryLine[]): string {
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-/** Send confirmation email to a delivery customer, with track + cancel links. */
+/** Send confirmation email to a delivery customer, with a track link. */
 export async function sendOrderConfirmationEmail(args: {
   to: string;
   order: { id: number; cancelToken: string; tableLabel?: string | null; note?: string | null; locationName: string; payMethod: string };
@@ -64,7 +64,6 @@ export async function sendOrderConfirmationEmail(args: {
   const fromEmail = s.restaurant_email || s.smtp_user;
 
   const trackUrl = `${base}/o/${args.order.cancelToken}`;
-  const cancelUrl = `${base}/o/${args.order.cancelToken}?action=cancel`;
 
   const payNote = args.order.payMethod === 'ONLINE' ? 'Betaald online.' : 'Betaal bij levering (cash of kaart).';
   const tableHtml = args.order.tableLabel ? `<div style="color:#555;">Tafel: <strong>${escapeHtml(args.order.tableLabel)}</strong></div>` : '';
@@ -84,9 +83,7 @@ export async function sendOrderConfirmationEmail(args: {
       <div style="margin:20px 0 8px;">${buildOrderTable(args.lines)}</div>
       <div style="margin-top:24px;display:flex;gap:10px;flex-wrap:wrap;">
         <a href="${trackUrl}" style="display:inline-block;background:#1976D2;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;font-weight:600;">Volg je bestelling →</a>
-        <a href="${cancelUrl}" style="display:inline-block;background:#fff;color:#c62828;border:1px solid #c62828;text-decoration:none;padding:12px 18px;border-radius:8px;font-weight:600;">Annuleer (binnen 2 min)</a>
       </div>
-      <p style="margin-top:16px;color:#888;font-size:12px;">Annuleren is alleen mogelijk binnen 2 minuten na bestellen. Daarna kan je je bestelling nog steeds volgen via deze link.</p>
     </div>
   </div></body></html>`;
 
@@ -95,6 +92,41 @@ export async function sendOrderConfirmationEmail(args: {
     replyTo: fromEmail,
     to: args.to,
     subject: `Bestelling ontvangen — ${args.order.locationName}`,
+    html,
+  });
+}
+
+/** Sent when a delivery rider/staff triggers a payment link for a customer
+ * who can't pay cash at the door. */
+export async function sendPaymentLinkEmail(args: {
+  to: string;
+  order: { id: number; locationName: string };
+  checkoutUrl: string;
+}): Promise<void> {
+  const s = await getEmailSettings();
+  const transporter = await createTransporter();
+  if (!transporter) { console.warn('[email] SMTP not configured, skipping payment link email.'); return; }
+
+  const restaurantName = s.restaurant_name || 'Up t Gemak';
+  const fromEmail = s.restaurant_email || s.smtp_user;
+
+  const html = `<!DOCTYPE html><html><body style="margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f4f5f7;color:#222;">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+    <div style="background:linear-gradient(135deg,#0D47A1,#1976D2);padding:24px 28px;color:#fff;">
+      <div style="font-size:20px;font-weight:700;">${escapeHtml(restaurantName)}</div>
+      <div style="margin-top:4px;opacity:0.9;">Betaal je bestelling online — ${escapeHtml(args.order.locationName)}</div>
+    </div>
+    <div style="padding:24px 28px;">
+      <p style="margin:0 0 16px;">Je bezorger vroeg je om online te betalen voor bestelling #${args.order.id}. Tik hieronder om te betalen (Bancontact, Apple Pay, Google Pay).</p>
+      <a href="${args.checkoutUrl}" style="display:inline-block;background:#1976D2;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;font-weight:600;">Betaal nu →</a>
+    </div>
+  </div></body></html>`;
+
+  await transporter.sendMail({
+    from: `"${restaurantName}" <${fromEmail}>`,
+    replyTo: fromEmail,
+    to: args.to,
+    subject: `Betaal je bestelling #${args.order.id} — ${args.order.locationName}`,
     html,
   });
 }
