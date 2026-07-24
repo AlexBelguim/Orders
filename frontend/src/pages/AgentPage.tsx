@@ -6,6 +6,7 @@ import { euro } from '../lib/format';
 import { aggregateOrderItems } from '../lib/menu';
 import { osmEmbedUrl } from '../lib/map';
 import PaymentLinkModal from '../components/PaymentLinkModal';
+import PocketLock from '../components/PocketLock';
 
 const API = import.meta.env.VITE_API_URL || '';
 
@@ -19,6 +20,8 @@ export default function AgentPage() {
   // and this is tapped one-handed on a moving bike, so fat-fingers are likely.
   const [confirmDeliver, setConfirmDeliver] = useState<number | null>(null);
   const [paymentModal, setPaymentModal] = useState<number | null>(null);
+  // Zakmodus: screen stays awake, all touches blocked (see PocketLock).
+  const [pocket, setPocket] = useState(false);
   const watchId = useRef<number | null>(null);
 
   const load = async () => {
@@ -89,6 +92,15 @@ export default function AgentPage() {
           ? <button className="primary block" style={{ marginTop: 8 }} onClick={startGps}>📍 Start locatie-deling</button>
           : <button className="block" style={{ marginTop: 8 }} onClick={stopGps}>Stop locatie-deling</button>}
         {gpsStatus === 'denied' && <p className="error" style={{ marginTop: 6 }}>Sta locatie-deling toe in je browser om gepositioneerd te worden.</p>}
+
+        {/* Phone goes in the pocket: keep the screen awake so the GPS pings keep
+            flowing, and block every touch so nothing gets tapped by accident. */}
+        <button className="block btn-pocket" style={{ marginTop: 8 }} onClick={() => setPocket(true)}>
+          🔒 Zakmodus — scherm aan, tikken uit
+        </button>
+        {gpsStatus !== 'sharing' && (
+          <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Zet eerst locatie-deling aan, anders ziet de klant je niet rijden.</p>
+        )}
       </div>
 
       {items.length === 0 && <div className="card"><p className="muted">Geen actieve leveringen. Nieuwe opdrachten verschijnen hier automatisch.</p></div>}
@@ -172,6 +184,10 @@ export default function AgentPage() {
 
       {paymentModal != null && (
         <PaymentLinkModal orderId={paymentModal} onClose={() => setPaymentModal(null)} onPaid={load} />
+      )}
+
+      {pocket && (
+        <PocketLock onUnlock={() => setPocket(false)} gpsSharing={gpsStatus === 'sharing'} deliveries={items.length} />
       )}
     </div>
   );
